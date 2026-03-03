@@ -1,0 +1,285 @@
+#lex-pro-popup {
+  position: fixed !important;
+  width: min(760px, calc(100vw - 24px)) !important;
+  max-height: min(420px, calc(100vh - 24px)) !important;
+  background: #ffffff !important;
+  border: 1px solid #dadce0 !important;
+  border-radius: 14px !important;
+  box-shadow: 0 16px 36px rgba(60, 64, 67, 0.24), 0 4px 12px rgba(60, 64, 67, 0.12) !important;
+  z-index: 2147483647 !important;
+  color: #202124 !important;
+  font-family: "Segoe UI", Tahoma, sans-serif !important;
+  overflow: hidden !important;
+}
+
+#lex-pro-popup * {
+  box-sizing: border-box;
+}
+
+.lex-bar {
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  padding: 0 12px;
+  background: #f1f3f4;
+  border-bottom: 1px solid #e0e0e0;
+  color: #1f1f1f;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  font-weight: 700;
+}
+
+#lex-close {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: none;
+  cursor: pointer;
+  color: #5f6368;
+  background: transparent;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+#lex-close:hover {
+  background: #e8eaed;
+}
+
+.lex-history-icon {
+  margin-left: auto;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 1px solid #dadce0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #5f6368;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.lex-history-icon.saved {
+  border-color: #137333;
+  color: #137333;
+  background: #e6f4ea;
+}
+
+.lex-audio-btn {
+  margin-top: 8px;
+  height: 28px;
+  min-width: 34px;
+  border: 1px solid #dadce0;
+  border-radius: 999px;
+  background: #fff;
+  color: #1a73e8;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.lex-audio-btn:hover {
+  background: #f8fbff;
+}
+
+.lex-audio-spinner {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid rgba(26, 115, 232, 0.25);
+  border-top-color: #1a73e8;
+  display: none;
+}
+
+.lex-audio-btn.loading .lex-audio-spinner {
+  display: inline-block;
+  animation: lex-audio-spin 0.8s linear infinite;
+}
+
+.lex-audio-btn.loading .lex-audio-icon {
+  opacity: 0.55;
+}
+
+.lex-content {
+  display: flex;
+  gap: 0;
+  min-height: 190px;
+}
+
+.lex-pane {
+  flex: 1;
+  padding: 14px 12px;
+  border-right: 1px solid #eceff1;
+  overflow: hidden;
+}
+
+.lex-pane:last-child {
+  border-right: none;
+}
+
+.main-pane {
+  flex: 1.25;
+}
+
+.lex-pane label {
+  display: block;
+  margin-bottom: 8px;
+  color: #5f6368;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.lex-word {
+  margin-bottom: 8px;
+  color: #1a73e8;
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.lex-text {
+  color: #202124;
+  font-size: 13px;
+  line-height: 1.5;
+  max-height: 240px;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+}
+
+.lex-switcher {
+  width: 100%;
+  height: 32px;
+  margin-bottom: 10px;
+  padding: 0 8px;
+  border: 1px solid #dadce0;
+  border-radius: 8px;
+  outline: none;
+  background: #fff;
+  color: #202124;
+  font-size: 12px;
+}
+
+.lex-switcher:focus {
+  border-color: #1a73e8;
+  box-shadow: 0 0 0 2px rgba(26, 115, 232, 0.2);
+}
+
+.lex-trans {
+  color: #202124;
+  font-size: 24px;
+  line-height: 1.3;
+  min-height: 38px;
+  margin-bottom: 6px;
+  overflow-wrap: anywhere;
+}
+
+.lex-roman {
+  color: #137333;
+  font-size: 13px;
+  font-style: italic;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.rtl {
+  direction: rtl;
+  text-align: right;
+}
+
+#viewerContainer {
+  position: absolute;
+  inset: 0;
+  overflow-x: hidden;
+  background-color: #525659;
+}
+
+#zoomBar {
+  position: fixed;
+  top: 10px;
+  right: 14px;
+  z-index: 2147483000;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(26, 115, 232, 0.25);
+  background: rgba(255, 255, 255, 0.82);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 6px 18px rgba(60, 64, 67, 0.2);
+  font-size: 12px;
+  color: #1f1f1f;
+}
+
+#zoomSelect {
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid #dadce0;
+  border-radius: 8px;
+  background: #fff;
+  color: #202124;
+  font-size: 12px;
+}
+
+#pdfPages.pdfViewer {
+  --lex-view-scale: 1;
+  transform: scale(var(--lex-view-scale));
+  transform-origin: top left;
+}
+
+#pdfPages .page {
+  will-change: transform;
+}
+
+#pdfPages .page canvas {
+  pointer-events: none;
+}
+
+#pdfPages .page .textLayer {
+  pointer-events: auto;
+  overflow: hidden;
+  line-height: 1;
+}
+
+#pdfPages .page .textLayer span,
+#pdfPages .page .textLayer br {
+  white-space: pre;
+  mix-blend-mode: multiply;
+  line-height: 1;
+  letter-spacing: 0;
+}
+
+@keyframes lex-audio-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 720px) {
+  #lex-pro-popup {
+    width: calc(100vw - 12px) !important;
+    max-height: calc(100vh - 12px) !important;
+  }
+
+  .lex-content {
+    flex-direction: column;
+    max-height: calc(100vh - 90px);
+    overflow-y: auto;
+  }
+
+  .lex-pane {
+    border-right: none;
+    border-bottom: 1px solid #eceff1;
+  }
+
+  .lex-pane:last-child {
+    border-bottom: none;
+  }
+}

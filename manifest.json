@@ -1,0 +1,46 @@
+{
+  "manifest_version": 3,
+  "name": "Lexicon Pro: Advanced Personal Reader",
+  "version": "3.3.1",
+  "description": "Capture selected English text and show definition, native translation, and romanized transliteration.",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage",
+    "webNavigation",
+    "tabs",
+    "declarativeNetRequest",
+    "declarativeNetRequestWithHostAccess",
+    "tts"
+  ],
+  "host_permissions": [
+    "<all_urls>",
+    "https://translate.googleapis.com/*",
+    "https://api.dictionaryapi.dev/api/v2/entries/en/*",
+    "https://translate.google.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Lexicon Pro"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>", "file:///*"],
+      "js": ["content.js"],
+      "css": ["styles.css"],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["content.js", "styles.css"],
+      "matches": ["<all_urls>"]
+    }
+  ],
+  "icons": {
+    "128": "icons/icon.png"
+  }
+}
