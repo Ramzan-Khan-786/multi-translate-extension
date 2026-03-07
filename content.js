@@ -222,6 +222,43 @@ function normalizeSelection(raw) {
   return (raw || "").replace(/\s+/g, " ").trim();
 }
 
+function getSelectionFromFormControl() {
+  const active = document.activeElement;
+  if (!active) {
+    return "";
+  }
+
+  const tagName = String(active.tagName || "").toLowerCase();
+  if (tagName !== "textarea" && tagName !== "input") {
+    return "";
+  }
+
+  const inputType = String(active.type || "").toLowerCase();
+  if (
+    tagName === "input" &&
+    !["text", "search", "url", "email", "tel", "password"].includes(inputType)
+  ) {
+    return "";
+  }
+
+  const value = typeof active.value === "string" ? active.value : "";
+  const start = Number(active.selectionStart);
+  const end = Number(active.selectionEnd);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
+    return "";
+  }
+
+  return normalizeSelection(value.slice(start, end));
+}
+
+function getCurrentSelectionText() {
+  const pageSelection = normalizeSelection(window.getSelection()?.toString() || "");
+  if (pageSelection) {
+    return pageSelection;
+  }
+  return getSelectionFromFormControl();
+}
+
 function getSelectionAnchorPoint() {
   const selection = window.getSelection();
   if (!selection || selection.rangeCount === 0) {
@@ -458,6 +495,13 @@ function renderPopup({ data, text, pointer, lang1, lang2 }) {
     const transEl = document.createElement("div");
     transEl.className = `lex-trans ${dirClass} ${codeClass}`.trim();
     transEl.textContent = data.trans?.[lang] || "Translation unavailable";
+    if (lang === "ur") {
+      // Keep Urdu typography stable even when host pages apply aggressive global font rules.
+      transEl.style.setProperty("font-family", '"Noto Nastaliq Urdu", serif', "important");
+      transEl.style.setProperty("font-size", "23px", "important");
+      transEl.style.setProperty("line-height", "1.72", "important");
+      transEl.style.setProperty("font-feature-settings", '"liga" 1, "calt" 1', "important");
+    }
     paneEl.appendChild(transEl);
 
     const romanEl = document.createElement("div");
@@ -616,7 +660,7 @@ function queueSelectionTranslation(selection, pointer) {
 }
 
 function handleSelectionSource(pointer) {
-  const selection = normalizeSelection(window.getSelection()?.toString() || "");
+  const selection = getCurrentSelectionText();
   queueSelectionTranslation(selection, pointer || (IS_PDF_MODE ? getSelectionAnchorPoint() : lastPointer));
 }
 
@@ -683,7 +727,7 @@ function installPdfMode() {
 }
 
 function installWebMode() {
-  document.addEventListener("mouseup", (event) => {
+  document.addEventListener("pointerup", (event) => {
     if (activeLexPopup && activeLexPopup.contains(event.target)) {
       return;
     }
@@ -694,14 +738,18 @@ function installWebMode() {
     };
 
     handleSelectionSource(lastPointer);
-  });
+  }, true);
+
+  document.addEventListener("selectionchange", () => {
+    handleSelectionSource(lastPointer);
+  }, true);
 
   document.addEventListener("keyup", (event) => {
     if (!shouldHandleKeySelectionEvent(event)) {
       return;
     }
     handleSelectionSource(lastPointer);
-  });
+  }, true);
 }
 
 const runtimeForFilePdfWarning = getRuntime();

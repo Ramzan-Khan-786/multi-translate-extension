@@ -207,12 +207,12 @@
 }
 
 .lex-trans.lang-ur {
-  font-family: "Noto Nastaliq Urdu", serif;
+  font-family: "Noto Nastaliq Urdu", serif !important;
   font-weight: 400;
-  font-size: 23px;
-  line-height: 1.72;
+  font-size: 23px !important;
+  line-height: 1.72 !important;
   letter-spacing: 0;
-  font-feature-settings: "liga" 1, "calt" 1;
+  font-feature-settings: "liga" 1, "calt" 1 !important;
 }
 
 .lex-trans.lang-hi {

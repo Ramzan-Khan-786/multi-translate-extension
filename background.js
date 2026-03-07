@@ -8,8 +8,13 @@
  * - Background orchestrator: caching, history, PDF redirects, DNR header rules
  */
 
+try {
+  importScripts("services/runtime-config.js");
+} catch (_) {
+  // Fallback to built-in defaults in service modules when generated config is missing.
+}
+
 importScripts(
-  "services/runtime-config.js",
   "services/translation-service.js",
   "services/romanization-service.js",
   "services/pronunciation-service.js",
