@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TextBridge - Google Sheets Sync</title>
+    <style>
+      :root {
+        color-scheme: light;
+      }
+
+      body {
+        margin: 0;
+        padding: 24px;
+        font-family: Segoe UI, Arial, sans-serif;
+        background: #f4f6fb;
+        color: #172035;
+      }
+
+      .card {
+        max-width: 760px;
+        background: #fff;
+        border: 1px solid #dde3f1;
+        border-radius: 12px;
+        box-shadow: 0 12px 24px rgba(20, 33, 61, 0.08);
+        padding: 20px;
+      }
+
+      h1 {
+        margin: 0 0 6px;
+        font-size: 22px;
+      }
+
+      p {
+        margin: 0 0 16px;
+        color: #3f4b6a;
+      }
+
+      .row {
+        margin-bottom: 12px;
+      }
+
+      label {
+        display: block;
+        font-weight: 600;
+        margin-bottom: 6px;
+      }
+
+      input[type="text"] {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 10px 12px;
+        border-radius: 8px;
+        border: 1px solid #c5d0e6;
+        font-size: 14px;
+      }
+
+      .toggle {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        font-weight: 600;
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 14px;
+      }
+
+      button {
+        border: 0;
+        border-radius: 8px;
+        padding: 9px 14px;
+        font-size: 14px;
+        cursor: pointer;
+        background: #1a73e8;
+        color: #fff;
+      }
+
+      button.secondary {
+        background: #e6ecf9;
+        color: #1e2a4a;
+      }
+
+      .note {
+        margin-top: 14px;
+        font-size: 13px;
+        color: #4b5d87;
+      }
+
+      .status {
+        margin-top: 16px;
+        min-height: 20px;
+        font-size: 14px;
+        font-weight: 600;
+      }
+
+      .status.ok {
+        color: #0f7f3f;
+      }
+
+      .status.error {
+        color: #b0212a;
+      }
+
+      .warning {
+        margin-top: 10px;
+        padding: 10px 12px;
+        border-radius: 8px;
+        border: 1px solid #f3c67f;
+        background: #fff8e8;
+        color: #7a4d00;
+        font-size: 13px;
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>TextBridge Sheets History</h1>
+      <p>Sync your saved translation history to Google Sheets.</p>
+
+      <div class="row">
+        <label for="spreadsheet-id">Spreadsheet ID or full Google Sheet URL</label>
+        <input id="spreadsheet-id" type="text" placeholder="1AbCdEf... or https://docs.google.com/spreadsheets/d/..." />
+      </div>
+
+      <div class="row">
+        <label for="sheet-name">Sheet Tab Name</label>
+        <input id="sheet-name" type="text" placeholder="TextBridge History" />
+      </div>
+
+      <div class="row">
+        <label for="simple-sheet-name">Quick Revision Sheet Name (En | Ur | Hi)</label>
+        <input id="simple-sheet-name" type="text" placeholder="TextBridge Quick" />
+      </div>
+
+      <div class="row">
+        <label class="toggle">
+          <input id="enabled" type="checkbox" />
+          Enable automatic sync for new history entries
+        </label>
+      </div>
+
+      <div class="row">
+        <label class="toggle">
+          <input id="sheet-only-mode" type="checkbox" />
+          Sheet-only local mode (auto-remove local history after successful sync)
+        </label>
+      </div>
+
+      <div class="actions">
+        <button id="save-btn" type="button">Save Settings</button>
+        <button id="auth-btn" class="secondary" type="button">Connect Google</button>
+        <button id="sync-btn" class="secondary" type="button">Sync Existing History Now</button>
+      </div>
+
+      <div id="oauth-warning" class="warning">
+        OAuth client ID is still a placeholder in `manifest.json`. Replace it before connecting Google.
+      </div>
+
+      <div class="note">
+        Required scope: Google Sheets. This page stores config locally in your browser profile.
+      </div>
+      <div id="status" class="status"></div>
+    </div>
+
+    <script src="options.js"></script>
+  </body>
+</html>

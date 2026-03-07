@@ -11,20 +11,29 @@
     "tabs",
     "declarativeNetRequest",
     "declarativeNetRequestWithHostAccess",
-    "tts"
+    "tts",
+    "identity"
   ],
   "host_permissions": [
     "<all_urls>",
     "https://translate.googleapis.com/*",
     "https://api.dictionaryapi.dev/api/v2/entries/en/*",
-    "https://translate.google.com/*"
+    "https://translate.google.com/*",
+    "https://sheets.googleapis.com/*"
   ],
+  "oauth2": {
+    "client_id": "263619000588-b4kgk32oh3isjk8ovi1t15l079ict63c.apps.googleusercontent.com",
+    "scopes": [
+      "https://www.googleapis.com/auth/spreadsheets"
+    ]
+  },
   "background": {
     "service_worker": "background.js"
   },
   "action": {
     "default_title": "TextBridge"
   },
+  "options_page": "options.html",
   "content_scripts": [
     {
       "matches": ["<all_urls>", "file:///*"],

@@ -12,6 +12,7 @@ importScripts(
   "services/translation-service.js",
   "services/romanization-service.js",
   "services/pronunciation-service.js",
+  "services/sheets-history-service.js",
 );
 
 const DEFAULTS = {
@@ -32,7 +33,14 @@ const TRANSLATION_CACHE_LIMIT = 50;
 const TRANSLATION_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const LEX_HISTORY_KEY = "lex_history";
 const LEX_HISTORY_LIMIT = 500;
+const LOCAL_HISTORY_MODE_KEY = "sheets_local_history_mode";
+const LOCAL_HISTORY_MODE_HYBRID = "hybrid";
+const LOCAL_HISTORY_MODE_SHEET_ONLY = "sheet_only";
 const inflightTranslationRequests = new Map();
+let translationCacheMemory = [];
+let translationCacheHydrated = false;
+let localHistoryModeHydrated = false;
+let localHistoryModeCache = LOCAL_HISTORY_MODE_HYBRID;
 
 chrome.runtime.onInstalled.addListener(async () => {
   await chrome.storage.local.set(DEFAULTS);
@@ -43,6 +51,17 @@ chrome.runtime.onInstalled.addListener(async () => {
 chrome.runtime.onStartup.addListener(() => {
   ensureDynamicRules();
   cleanupTranslationCache();
+});
+
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName !== "local") {
+    return;
+  }
+
+  if (changes[LOCAL_HISTORY_MODE_KEY]) {
+    localHistoryModeCache = normalizeLocalHistoryMode(changes[LOCAL_HISTORY_MODE_KEY].newValue);
+    localHistoryModeHydrated = true;
+  }
 });
 
 async function ensureDynamicRules() {
@@ -205,6 +224,32 @@ function isTranslationCacheEntryFresh(entry, now = Date.now()) {
   return now - ts <= TRANSLATION_CACHE_TTL_MS;
 }
 
+function normalizeLocalHistoryMode(value) {
+  return String(value || "").toLowerCase() === LOCAL_HISTORY_MODE_SHEET_ONLY
+    ? LOCAL_HISTORY_MODE_SHEET_ONLY
+    : LOCAL_HISTORY_MODE_HYBRID;
+}
+
+async function getLocalHistoryMode() {
+  if (localHistoryModeHydrated) {
+    return localHistoryModeCache;
+  }
+
+  try {
+    const data = await chrome.storage.local.get([LOCAL_HISTORY_MODE_KEY]);
+    localHistoryModeCache = normalizeLocalHistoryMode(data[LOCAL_HISTORY_MODE_KEY]);
+  } catch (_) {
+    localHistoryModeCache = LOCAL_HISTORY_MODE_HYBRID;
+  }
+  localHistoryModeHydrated = true;
+  return localHistoryModeCache;
+}
+
+async function isSheetOnlyLocalHistoryMode() {
+  const mode = await getLocalHistoryMode();
+  return mode === LOCAL_HISTORY_MODE_SHEET_ONLY;
+}
+
 function pruneTranslationCacheEntries(entries) {
   const now = Date.now();
   return (Array.isArray(entries) ? entries : [])
@@ -224,9 +269,13 @@ async function readRawTranslationCache() {
 }
 
 async function setTranslationCache(entries) {
+  const pruned = pruneTranslationCacheEntries(entries);
+  translationCacheMemory = pruned;
+  translationCacheHydrated = true;
+
   try {
     await chrome.storage.local.set({
-      [TRANSLATION_CACHE_KEY]: pruneTranslationCacheEntries(entries),
+      [TRANSLATION_CACHE_KEY]: pruned,
     });
   } catch (_) {
     // ignore cache write failures
@@ -234,15 +283,27 @@ async function setTranslationCache(entries) {
 }
 
 async function cleanupTranslationCache() {
-  const rawEntries = await readRawTranslationCache();
-  const prunedEntries = pruneTranslationCacheEntries(rawEntries);
-  if (rawEntries.length !== prunedEntries.length) {
-    await setTranslationCache(prunedEntries);
+  if (!translationCacheHydrated) {
+    const rawEntries = await readRawTranslationCache();
+    const prunedEntries = pruneTranslationCacheEntries(rawEntries);
+    translationCacheMemory = prunedEntries;
+    translationCacheHydrated = true;
+
+    if (rawEntries.length !== prunedEntries.length) {
+      await setTranslationCache(prunedEntries);
+    }
+    return prunedEntries;
   }
+
+  const prunedEntries = pruneTranslationCacheEntries(translationCacheMemory);
+  translationCacheMemory = prunedEntries;
   return prunedEntries;
 }
 
 async function getTranslationCache() {
+  if (translationCacheHydrated) {
+    return translationCacheMemory;
+  }
   return cleanupTranslationCache();
 }
 
@@ -299,6 +360,42 @@ async function saveToHistory({ word, definition, ur, hi, url }) {
 
   try {
     await chrome.storage.local.set({ [LEX_HISTORY_KEY]: nextEntries });
+    if (globalThis.SheetsHistoryService?.enqueueEntry) {
+      // Fire-and-forget: history sync should never block translation UX.
+      globalThis.SheetsHistoryService.enqueueEntry(nextEntry)
+        .then(async (syncResult) => {
+          if (!syncResult?.ok) {
+            return;
+          }
+
+          const sheetOnlyMode = await isSheetOnlyLocalHistoryMode();
+          if (!sheetOnlyMode) {
+            return;
+          }
+
+          const freshEntries = await getLexHistory();
+          const filteredEntries = freshEntries.filter((entry) => {
+            const sameWord =
+              String(entry?.word || "").toLowerCase() === normalizedWord.toLowerCase();
+            const sameTimestamp =
+              Number(entry?.timestamp || 0) === Number(nextEntry.timestamp || -1);
+            return !(sameWord && sameTimestamp);
+          });
+
+          if (filteredEntries.length === freshEntries.length) {
+            return;
+          }
+
+          try {
+            await chrome.storage.local.set({ [LEX_HISTORY_KEY]: filteredEntries });
+          } catch (_) {
+            // ignore cleanup errors
+          }
+        })
+        .catch(() => {
+          // ignore sheets sync failures
+        });
+    }
     return true;
   } catch (_) {
     return false;
@@ -420,6 +517,75 @@ function normalizeRequestedLang(value, fallback) {
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type === "SHEETS_GET_CONFIG") {
+    if (!globalThis.SheetsHistoryService?.getConfig) {
+      sendResponse({ ok: false, error: "Sheets service unavailable." });
+      return;
+    }
+    globalThis.SheetsHistoryService.getConfig()
+      .then((config) => sendResponse({ ok: true, config }))
+      .catch(() => sendResponse({ ok: false, error: "Could not read Sheets config." }));
+    return true;
+  }
+
+  if (message?.type === "SHEETS_SET_CONFIG") {
+    if (!globalThis.SheetsHistoryService?.setConfig) {
+      sendResponse({ ok: false, error: "Sheets service unavailable." });
+      return;
+    }
+    globalThis.SheetsHistoryService.setConfig(message.config || {})
+      .then((config) => sendResponse({ ok: true, config }))
+      .catch(() => sendResponse({ ok: false, error: "Could not save Sheets config." }));
+    return true;
+  }
+
+  if (message?.type === "SHEETS_AUTH") {
+    if (!globalThis.SheetsHistoryService?.authorize) {
+      sendResponse({ ok: false, error: "Sheets service unavailable." });
+      return;
+    }
+    globalThis.SheetsHistoryService.authorize(true)
+      .then((result) => sendResponse(result))
+      .catch(() => sendResponse({ ok: false, error: "Authorization failed." }));
+    return true;
+  }
+
+  if (message?.type === "SHEETS_SYNC_NOW") {
+    if (!globalThis.SheetsHistoryService?.syncAllEntries) {
+      sendResponse({ ok: false, error: "Sheets service unavailable.", appended: 0 });
+      return;
+    }
+
+    getLexHistory()
+      .then((history) =>
+        globalThis.SheetsHistoryService.syncAllEntries(history, true).then((result) => ({
+          history,
+          result,
+        })),
+      )
+      .then(async ({ result }) => {
+        if (result?.ok) {
+          const sheetOnlyMode = await isSheetOnlyLocalHistoryMode();
+          if (sheetOnlyMode) {
+            try {
+              await chrome.storage.local.set({ [LEX_HISTORY_KEY]: [] });
+            } catch (_) {
+              // ignore cleanup failures
+            }
+          }
+        }
+        sendResponse(result);
+      })
+      .catch(() =>
+        sendResponse({
+          ok: false,
+          error: "Manual sync failed.",
+          appended: 0,
+        }),
+      );
+    return true;
+  }
+
   if (message?.type === "GET_PRONUNCIATION" || message?.type === "GET_AUDIO_URL") {
     const text = (message.text || "").trim();
     const lang = (message.lang || "").trim().toLowerCase();

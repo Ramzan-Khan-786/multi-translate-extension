@@ -37,7 +37,10 @@
     clientX: Math.round(window.innerWidth / 2),
     clientY: Math.round(window.innerHeight / 2),
   };
+  let pointerDown = false;
   let cleanupTimer = null;
+  let cleanupIdleHandle = null;
+  let lastCleanupScheduleTs = 0;
 
   let pdfViewer = null;
   let pdfDocument = null;
@@ -513,17 +516,41 @@
   }
 
   function scheduleViewerCleanup() {
+    const now = Date.now();
+    if (now - lastCleanupScheduleTs < 140) {
+      return;
+    }
+    lastCleanupScheduleTs = now;
+
     if (cleanupTimer) {
       clearTimeout(cleanupTimer);
     }
+    if (cleanupIdleHandle && typeof cancelIdleCallback === "function") {
+      cancelIdleCallback(cleanupIdleHandle);
+      cleanupIdleHandle = null;
+    }
+
     cleanupTimer = setTimeout(() => {
       cleanupTimer = null;
-      if (pdfViewer && typeof pdfViewer.cleanup === "function") {
-        pdfViewer.cleanup();
+
+      const runCleanup = () => {
+        if (pdfViewer && typeof pdfViewer.cleanup === "function") {
+          pdfViewer.cleanup();
+        }
+        if (pdfDocument && typeof pdfDocument.cleanup === "function") {
+          pdfDocument.cleanup();
+        }
+      };
+
+      if (typeof requestIdleCallback === "function") {
+        cleanupIdleHandle = requestIdleCallback(() => {
+          cleanupIdleHandle = null;
+          runCleanup();
+        });
+        return;
       }
-      if (pdfDocument && typeof pdfDocument.cleanup === "function") {
-        pdfDocument.cleanup();
-      }
+
+      runCleanup();
     }, cleanupIdleMs);
   }
 
@@ -592,13 +619,26 @@
   }
 
   function installSelectionObservers() {
-    document.addEventListener("mousemove", (event) => {
-      lastPointer = { clientX: event.clientX, clientY: event.clientY };
-    });
+    document.addEventListener(
+      "mousemove",
+      (event) => {
+        lastPointer = { clientX: event.clientX, clientY: event.clientY };
+      },
+      { passive: true },
+    );
+
+    document.addEventListener(
+      "mousedown",
+      () => {
+        pointerDown = true;
+      },
+      true,
+    );
 
     document.addEventListener(
       "mouseup",
       (event) => {
+        pointerDown = false;
         lastPointer = { clientX: event.clientX, clientY: event.clientY };
         scheduleSelectionEmit(event);
       },
@@ -608,6 +648,10 @@
     document.addEventListener(
       "selectionchange",
       () => {
+        const hasSelection = normalizeSelection(window.getSelection()?.toString() || "").length > 0;
+        if (!pointerDown && !hasSelection) {
+          return;
+        }
         scheduleSelectionEmit();
       },
       true,
@@ -906,6 +950,10 @@
     if (cleanupTimer) {
       clearTimeout(cleanupTimer);
       cleanupTimer = null;
+    }
+    if (cleanupIdleHandle && typeof cancelIdleCallback === "function") {
+      cancelIdleCallback(cleanupIdleHandle);
+      cleanupIdleHandle = null;
     }
     if (statusClearTimer) {
       clearTimeout(statusClearTimer);

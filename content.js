@@ -26,6 +26,11 @@ let lastPointer = {
   clientY: Math.round(window.innerHeight / 2),
 };
 let audioContext = null;
+let cachedLangPrefs = { ...DEFAULT_LANGS };
+let langPrefsLoaded = false;
+let pointerFrameScheduled = false;
+let pendingPointer = null;
+let queuedSelectionText = "";
 
 function getRuntime() {
   const c = globalThis.chrome;
@@ -242,22 +247,52 @@ function normalizeLangOrDefault(value, fallback) {
   return SUPPORTED_LANG_CODES.has(value) ? value : fallback;
 }
 
+function shouldHandleKeySelectionEvent(event) {
+  if (!event) {
+    return true;
+  }
+
+  if (event.shiftKey && event.key && event.key.startsWith("Arrow")) {
+    return true;
+  }
+
+  if ((event.ctrlKey || event.metaKey) && String(event.key || "").toLowerCase() === "a") {
+    return true;
+  }
+
+  if (event.key === "Escape") {
+    return true;
+  }
+
+  return false;
+}
+
 async function getLangPrefs() {
+  if (langPrefsLoaded) {
+    return { ...cachedLangPrefs };
+  }
+
   const storage = getStorageArea();
   if (!storage || typeof storage.get !== "function") {
-    return { ...DEFAULT_LANGS };
+    langPrefsLoaded = true;
+    cachedLangPrefs = { ...DEFAULT_LANGS };
+    return { ...cachedLangPrefs };
   }
 
   try {
     const prefs = await storage.get(["lang1", "lang2"]);
     const lang1 = normalizeLangOrDefault(prefs.lang1, DEFAULT_LANGS.lang1);
     const lang2 = normalizeLangOrDefault(prefs.lang2, DEFAULT_LANGS.lang2);
-    return {
+    cachedLangPrefs = {
       lang1,
       lang2,
     };
+    langPrefsLoaded = true;
+    return { ...cachedLangPrefs };
   } catch (_) {
-    return { ...DEFAULT_LANGS };
+    langPrefsLoaded = true;
+    cachedLangPrefs = { ...DEFAULT_LANGS };
+    return { ...cachedLangPrefs };
   }
 }
 
@@ -273,6 +308,11 @@ async function setLangPref(key, value) {
 
   try {
     await storage.set({ [key]: value });
+    cachedLangPrefs = {
+      ...cachedLangPrefs,
+      [key]: value,
+    };
+    langPrefsLoaded = true;
   } catch (_) {
     // no-op
   }
@@ -549,10 +589,15 @@ function clearPdfPollTimer() {
 }
 
 function queueSelectionTranslation(selection, pointer) {
+  if (selection === queuedSelectionText) {
+    return;
+  }
+  queuedSelectionText = selection;
   clearSelectionDebounce();
 
   selectionDebounceId = setTimeout(() => {
     selectionDebounceId = null;
+    queuedSelectionText = "";
 
     if (!isSelectionInRange(selection)) {
       if (!selection) {
@@ -576,12 +621,30 @@ function handleSelectionSource(pointer) {
 }
 
 function installSharedListeners() {
-  document.addEventListener("mousemove", (event) => {
-    lastPointer = {
-      clientX: event.clientX,
-      clientY: event.clientY,
-    };
-  });
+  document.addEventListener(
+    "mousemove",
+    (event) => {
+      pendingPointer = {
+        clientX: event.clientX,
+        clientY: event.clientY,
+      };
+
+      if (pointerFrameScheduled) {
+        return;
+      }
+
+      pointerFrameScheduled = true;
+      requestAnimationFrame(() => {
+        pointerFrameScheduled = false;
+        if (!pendingPointer) {
+          return;
+        }
+        lastPointer = pendingPointer;
+        pendingPointer = null;
+      });
+    },
+    { passive: true },
+  );
 
   document.addEventListener("mousedown", (event) => {
     if (activeLexPopup && !activeLexPopup.contains(event.target)) {
@@ -633,11 +696,10 @@ function installWebMode() {
     handleSelectionSource(lastPointer);
   });
 
-  document.addEventListener("selectionchange", () => {
-    handleSelectionSource(lastPointer);
-  });
-
-  document.addEventListener("keyup", () => {
+  document.addEventListener("keyup", (event) => {
+    if (!shouldHandleKeySelectionEvent(event)) {
+      return;
+    }
     handleSelectionSource(lastPointer);
   });
 }
@@ -658,6 +720,33 @@ if (IS_PDF_MODE) {
   installPdfMode();
 } else {
   installWebMode();
+}
+
+const storageForLangSync = getStorageArea();
+if (storageForLangSync && globalThis.chrome?.storage?.onChanged) {
+  globalThis.chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName !== "local") {
+      return;
+    }
+
+    const nextLang1 = changes.lang1?.newValue;
+    const nextLang2 = changes.lang2?.newValue;
+    if (typeof nextLang1 !== "string" && typeof nextLang2 !== "string") {
+      return;
+    }
+
+    cachedLangPrefs = {
+      lang1: normalizeLangOrDefault(
+        typeof nextLang1 === "string" ? nextLang1 : cachedLangPrefs.lang1,
+        DEFAULT_LANGS.lang1,
+      ),
+      lang2: normalizeLangOrDefault(
+        typeof nextLang2 === "string" ? nextLang2 : cachedLangPrefs.lang2,
+        DEFAULT_LANGS.lang2,
+      ),
+    };
+    langPrefsLoaded = true;
+  });
 }
 
 window.addEventListener("beforeunload", () => {

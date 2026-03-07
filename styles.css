@@ -380,6 +380,8 @@ body.lex-pdf-viewer #pdfPages .page {
   margin: 0 auto 10px;
   border: none;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  contain: layout paint;
+  will-change: transform;
 }
 
 body.lex-pdf-viewer #pdfPages .page canvas {
