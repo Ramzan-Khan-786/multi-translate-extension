@@ -1,0 +1,19 @@
+{
+  "mode": "translation",
+  "targetLang": "hi",
+  "input": {
+    "ok": true,
+    "data": [
+      [
+        ["को फिर से खोजने", "rediscover", null, null, 6],
+        [null, null, "ko phir se khojane", "ˌrēdəˈskəvər"]
+      ],
+      null,
+      "en"
+    ]
+  },
+  "expected": {
+    "translatedText": "को फिर से खोजने",
+    "romanized": "ko phir se khojane"
+  }
+}

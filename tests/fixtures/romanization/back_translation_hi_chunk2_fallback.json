@@ -1,0 +1,17 @@
+{
+  "mode": "back_translation",
+  "input": {
+    "ok": true,
+    "data": [
+      [
+        ["Rediscovery", "पुनर्खोज", null, null, 3],
+        [null, null, "punarkhoj", null]
+      ],
+      null,
+      "hi"
+    ]
+  },
+  "expected": {
+    "romanized": "punarkhoj"
+  }
+}

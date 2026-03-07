@@ -1,0 +1,19 @@
+{
+  "mode": "translation",
+  "targetLang": "en",
+  "input": {
+    "ok": true,
+    "data": [
+      [
+        ["hello", "ہیلو", null, null, 2],
+        [null, null, "hello", "hello"]
+      ],
+      null,
+      "ur"
+    ]
+  },
+  "expected": {
+    "translatedText": "hello",
+    "romanized": ""
+  }
+}

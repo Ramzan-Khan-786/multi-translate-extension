@@ -1,0 +1,19 @@
+{
+  "mode": "translation",
+  "targetLang": "ur",
+  "input": {
+    "ok": true,
+    "data": [
+      [
+        ["ریڈسکور", "rediscover", null, null, 3],
+        [null, null, "rediscover", "rediscover"]
+      ],
+      null,
+      "en"
+    ]
+  },
+  "expected": {
+    "translatedText": "ریڈسکور",
+    "romanized": ""
+  }
+}

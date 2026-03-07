@@ -1,5 +1,5 @@
 /**
- * Lexicon Pro Background Orchestrator (MV3 Service Worker)
+ * TextBridge Background Orchestrator (MV3 Service Worker)
  *
  * Architecture:
  * - TranslationService: API fetch + dictionary parse
@@ -16,8 +16,9 @@ importScripts(
 
 const DEFAULTS = {
   lang1: "ur",
-  lang2: "fa",
+  lang2: "hi",
 };
+const SUPPORTED_LANGS = new Set(["en", "ur", "hi"]);
 
 const VIEWER_PAGE = "viewer.html";
 const PDF_HEAD_TIMEOUT_MS = 2500;
@@ -26,18 +27,22 @@ const PDF_HEADER_RULE_ID = 1001;
 const TTS_HEADER_RULE_ID = 1002;
 const TTS_API_HEADER_RULE_ID = 1003;
 
-const TRANSLATION_CACHE_KEY = "translationCache";
-const TRANSLATION_CACHE_LIMIT = 10;
+const TRANSLATION_CACHE_KEY = "translationCacheV2";
+const TRANSLATION_CACHE_LIMIT = 50;
+const TRANSLATION_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const LEX_HISTORY_KEY = "lex_history";
 const LEX_HISTORY_LIMIT = 500;
+const inflightTranslationRequests = new Map();
 
 chrome.runtime.onInstalled.addListener(async () => {
   await chrome.storage.local.set(DEFAULTS);
   await ensureDynamicRules();
+  await cleanupTranslationCache();
 });
 
 chrome.runtime.onStartup.addListener(() => {
   ensureDynamicRules();
+  cleanupTranslationCache();
 });
 
 async function ensureDynamicRules() {
@@ -189,7 +194,26 @@ chrome.action.onClicked.addListener(async (tab) => {
   }
 });
 
-async function getTranslationCache() {
+function isTranslationCacheEntryFresh(entry, now = Date.now()) {
+  if (!entry || typeof entry.key !== "string" || !entry.value) {
+    return false;
+  }
+  const ts = Number(entry.ts || 0);
+  if (!Number.isFinite(ts) || ts <= 0) {
+    return false;
+  }
+  return now - ts <= TRANSLATION_CACHE_TTL_MS;
+}
+
+function pruneTranslationCacheEntries(entries) {
+  const now = Date.now();
+  return (Array.isArray(entries) ? entries : [])
+    .filter((entry) => isTranslationCacheEntryFresh(entry, now))
+    .sort((a, b) => Number(b.ts || 0) - Number(a.ts || 0))
+    .slice(0, TRANSLATION_CACHE_LIMIT);
+}
+
+async function readRawTranslationCache() {
   try {
     const data = await chrome.storage.local.get([TRANSLATION_CACHE_KEY]);
     const entries = data[TRANSLATION_CACHE_KEY];
@@ -202,11 +226,24 @@ async function getTranslationCache() {
 async function setTranslationCache(entries) {
   try {
     await chrome.storage.local.set({
-      [TRANSLATION_CACHE_KEY]: entries.slice(0, TRANSLATION_CACHE_LIMIT),
+      [TRANSLATION_CACHE_KEY]: pruneTranslationCacheEntries(entries),
     });
   } catch (_) {
     // ignore cache write failures
   }
+}
+
+async function cleanupTranslationCache() {
+  const rawEntries = await readRawTranslationCache();
+  const prunedEntries = pruneTranslationCacheEntries(rawEntries);
+  if (rawEntries.length !== prunedEntries.length) {
+    await setTranslationCache(prunedEntries);
+  }
+  return prunedEntries;
+}
+
+async function getTranslationCache() {
+  return cleanupTranslationCache();
 }
 
 function getCacheKey(text, l1, l2) {
@@ -239,7 +276,7 @@ async function getLexHistory() {
   }
 }
 
-async function saveToHistory({ word, definition, ur, fa, url }) {
+async function saveToHistory({ word, definition, ur, hi, url }) {
   const normalizedWord = (word || "").trim();
   if (!normalizedWord) {
     return false;
@@ -249,7 +286,7 @@ async function saveToHistory({ word, definition, ur, fa, url }) {
     word: normalizedWord,
     definition: definition || "Definition not found",
     ur: ur || "",
-    fa: fa || "",
+    hi: hi || "",
     timestamp: Date.now(),
     url: url || "",
   };
@@ -277,7 +314,7 @@ async function runTranslationPipeline(text, l1, l2, pageUrl) {
       word: text,
       definition: cached.dict,
       ur: cached.trans?.ur || "",
-      fa: cached.trans?.fa || "",
+      hi: cached.trans?.hi || "",
       url: pageUrl,
     });
 
@@ -298,6 +335,39 @@ async function runTranslationPipeline(text, l1, l2, pageUrl) {
   const tr1 = RomanizationService.parseTranslationResponse(l1Response, l1);
   const tr2 = RomanizationService.parseTranslationResponse(l2Response, l2);
 
+  async function enhanceRomanization(targetLang, translatedText, currentRomanized) {
+    const normalizedLang = (targetLang || "").toLowerCase();
+    if (!["ur", "hi"].includes(normalizedLang)) {
+      return "";
+    }
+    if (!translatedText) {
+      return "";
+    }
+    if (RomanizationService.isRomanizationUsable(currentRomanized)) {
+      return currentRomanized;
+    }
+
+    // Fallback transliteration pass:
+    // translate translated script text back with sl=<target>, tl=en, dt=rm.
+    const backResponse = await TranslationService.fetchTranslationResponse(
+      translatedText,
+      "en",
+      5000,
+      normalizedLang,
+    );
+    const fallbackRomanized =
+      RomanizationService.parseRomanizationFromBackTranslationResponse(backResponse);
+
+    return RomanizationService.isRomanizationUsable(fallbackRomanized)
+      ? fallbackRomanized
+      : currentRomanized || "";
+  }
+
+  const [roman1, roman2] = await Promise.all([
+    enhanceRomanization(l1, tr1.translatedText, tr1.romanized),
+    enhanceRomanization(l2, tr2.translatedText, tr2.romanized),
+  ]);
+
   const payload = {
     dict: dict.definition,
     phonetic: dict.phonetic,
@@ -306,8 +376,8 @@ async function runTranslationPipeline(text, l1, l2, pageUrl) {
       [l2]: tr2.translatedText,
     },
     roman: {
-      [l1]: tr1.romanized,
-      [l2]: tr2.romanized,
+      [l1]: roman1,
+      [l2]: roman2,
     },
   };
 
@@ -316,7 +386,7 @@ async function runTranslationPipeline(text, l1, l2, pageUrl) {
     word: text,
     definition: payload.dict,
     ur: payload.trans?.ur || (l1 === "ur" ? tr1.translatedText : l2 === "ur" ? tr2.translatedText : ""),
-    fa: payload.trans?.fa || (l1 === "fa" ? tr1.translatedText : l2 === "fa" ? tr2.translatedText : ""),
+    hi: payload.trans?.hi || (l1 === "hi" ? tr1.translatedText : l2 === "hi" ? tr2.translatedText : ""),
     url: pageUrl,
   });
 
@@ -325,6 +395,28 @@ async function runTranslationPipeline(text, l1, l2, pageUrl) {
     historySaved,
     fromCache: false,
   };
+}
+
+function getInflightRequestKey(text, l1, l2) {
+  return getCacheKey(text, l1, l2);
+}
+
+function runTranslationPipelineDedup(text, l1, l2, pageUrl) {
+  const key = getInflightRequestKey(text, l1, l2);
+  const existingPromise = inflightTranslationRequests.get(key);
+  if (existingPromise) {
+    return existingPromise;
+  }
+
+  const nextPromise = runTranslationPipeline(text, l1, l2, pageUrl).finally(() => {
+    inflightTranslationRequests.delete(key);
+  });
+  inflightTranslationRequests.set(key, nextPromise);
+  return nextPromise;
+}
+
+function normalizeRequestedLang(value, fallback) {
+  return SUPPORTED_LANGS.has(value) ? value : fallback;
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -346,10 +438,27 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   const text = (message.text || "").trim();
-  const l1 = message.l1 || DEFAULTS.lang1;
-  const l2 = message.l2 || DEFAULTS.lang2;
+  const l1 = normalizeRequestedLang((message.l1 || "").toLowerCase(), DEFAULTS.lang1);
+  const l2 = normalizeRequestedLang((message.l2 || "").toLowerCase(), DEFAULTS.lang2);
   const pageUrl = message.url || "";
 
-  runTranslationPipeline(text, l1, l2, pageUrl).then(sendResponse);
+  runTranslationPipelineDedup(text, l1, l2, pageUrl)
+    .then(sendResponse)
+    .catch(() => {
+      sendResponse({
+        dict: "Definition not found",
+        phonetic: "",
+        trans: {
+          [l1]: "",
+          [l2]: "",
+        },
+        roman: {
+          [l1]: "",
+          [l2]: "",
+        },
+        historySaved: false,
+        fromCache: false,
+      });
+    });
   return true;
 });

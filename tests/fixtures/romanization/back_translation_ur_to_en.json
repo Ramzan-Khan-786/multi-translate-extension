@@ -1,0 +1,17 @@
+{
+  "mode": "back_translation",
+  "input": {
+    "ok": true,
+    "data": [
+      [
+        ["Rediscovery", "دوبارہ دریافت", null, null, 3],
+        [null, null, null, "dubarah daryaft"]
+      ],
+      null,
+      "ur"
+    ]
+  },
+  "expected": {
+    "romanized": "dubarah daryaft"
+  }
+}

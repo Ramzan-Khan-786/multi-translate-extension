@@ -1,22 +1,26 @@
 let activeLexPopup = null;
 
 const POPUP_ID = "lex-pro-popup";
-const DEFAULT_LANGS = { lang1: "ur", lang2: "fa" };
+const DEFAULT_LANGS = { lang1: "ur", lang2: "hi" };
 const LANGUAGE_OPTIONS = [
   { code: "ur", label: "Urdu", rtl: true },
-  { code: "ar", label: "Arabic", rtl: true },
-  { code: "fa", label: "Farsi", rtl: true },
   { code: "hi", label: "Hindi", rtl: false },
+  { code: "en", label: "English", rtl: false },
 ];
 const MIN_SELECTION_LENGTH = 2;
 const MAX_SELECTION_LENGTH = 180;
 const SELECTION_DEBOUNCE_MS = 250;
+const MESSAGE_RESPONSE_TIMEOUT_MS = 6000;
 const PDF_POLL_MS = 300;
+const POPUP_IDLE_CLOSE_MS = 5000;
 const IS_PDF_MODE = window.location.protocol === "chrome-extension:";
+const HAS_PDFJS_SELECTION_BRIDGE = IS_PDF_MODE && !!document.getElementById("pdfPages");
+const SUPPORTED_LANG_CODES = new Set(LANGUAGE_OPTIONS.map((item) => item.code));
 
 let lastDispatchedSelection = "";
 let selectionDebounceId = null;
 let pdfPollTimer = null;
+let popupIdleTimer = null;
 let lastPointer = {
   clientX: Math.round(window.innerWidth / 2),
   clientY: Math.round(window.innerHeight / 2),
@@ -33,18 +37,51 @@ function getStorageArea() {
   return c && c.storage && c.storage.local ? c.storage.local : null;
 }
 
-function safeSendMessage(message, callback) {
+function safeSendMessage(message, onSuccess, onError, timeoutMs = MESSAGE_RESPONSE_TIMEOUT_MS) {
   const runtime = getRuntime();
   if (!runtime || !runtime.id || typeof runtime.sendMessage !== "function") {
+    onError?.("runtime");
     return;
   }
 
-  runtime.sendMessage(message, (response) => {
-    if (runtime.lastError) {
+  let settled = false;
+  const timeoutId = setTimeout(() => {
+    if (settled) {
       return;
     }
-    callback(response);
-  });
+    settled = true;
+    onError?.("timeout");
+  }, timeoutMs);
+
+  const finishSuccess = (response) => {
+    if (settled) {
+      return;
+    }
+    settled = true;
+    clearTimeout(timeoutId);
+    onSuccess?.(response);
+  };
+
+  const finishError = (reason) => {
+    if (settled) {
+      return;
+    }
+    settled = true;
+    clearTimeout(timeoutId);
+    onError?.(reason || "runtime");
+  };
+
+  try {
+    runtime.sendMessage(message, (response) => {
+      if (runtime.lastError) {
+        finishError("runtime");
+        return;
+      }
+      finishSuccess(response);
+    });
+  } catch (_) {
+    finishError("runtime");
+  }
 }
 
 function requestAudioUrl(text, lang) {
@@ -57,6 +94,9 @@ function requestAudioUrl(text, lang) {
       },
       (response) => {
         resolve(response || { ok: false, spoken: false, dataUrl: "" });
+      },
+      () => {
+        resolve({ ok: false, spoken: false, dataUrl: "" });
       },
     );
   });
@@ -81,27 +121,53 @@ async function ensureAudioContext() {
 }
 
 async function playDataUrlWithAudioContext(dataUrl) {
-  const ctx = await ensureAudioContext();
-  if (!ctx) {
+  const tryHtmlAudio = async () => {
     const audio = new Audio(dataUrl);
     await audio.play();
-    return;
-  }
+  };
 
-  const response = await fetch(dataUrl);
-  const bytes = await response.arrayBuffer();
-  const buffer = await ctx.decodeAudioData(bytes.slice(0));
-  const source = ctx.createBufferSource();
-  source.buffer = buffer;
-  source.connect(ctx.destination);
-  source.start(0);
+  try {
+    const ctx = await ensureAudioContext();
+    if (!ctx) {
+      await tryHtmlAudio();
+      return;
+    }
+
+    const response = await fetch(dataUrl);
+    const bytes = await response.arrayBuffer();
+    const buffer = await ctx.decodeAudioData(bytes.slice(0));
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(ctx.destination);
+    source.start(0);
+  } catch (_) {
+    await tryHtmlAudio();
+  }
 }
 
 function removePopup() {
+  clearPopupIdleTimer();
   if (activeLexPopup) {
     activeLexPopup.remove();
     activeLexPopup = null;
   }
+}
+
+function clearPopupIdleTimer() {
+  if (!popupIdleTimer) {
+    return;
+  }
+  clearTimeout(popupIdleTimer);
+  popupIdleTimer = null;
+}
+
+function schedulePopupIdleClose(popup) {
+  clearPopupIdleTimer();
+  popupIdleTimer = setTimeout(() => {
+    if (activeLexPopup === popup && !popup.matches(":hover")) {
+      removePopup();
+    }
+  }, POPUP_IDLE_CLOSE_MS);
 }
 
 function getLanguageMeta(code) {
@@ -109,12 +175,21 @@ function getLanguageMeta(code) {
 }
 
 function buildLanguageSelect(selectedCode, prefKey) {
-  const options = LANGUAGE_OPTIONS.map((lang) => {
-    const selected = selectedCode === lang.code ? "selected" : "";
-    return `<option value="${lang.code}" ${selected}>${lang.label}</option>`;
-  }).join("");
+  const selectEl = document.createElement("select");
+  selectEl.className = "lex-switcher";
+  selectEl.setAttribute("data-pref", prefKey);
 
-  return `<select class="lex-switcher" data-pref="${prefKey}">${options}</select>`;
+  LANGUAGE_OPTIONS.forEach((lang) => {
+    const optionEl = document.createElement("option");
+    optionEl.value = lang.code;
+    optionEl.textContent = lang.label;
+    if (selectedCode === lang.code) {
+      optionEl.selected = true;
+    }
+    selectEl.appendChild(optionEl);
+  });
+
+  return selectEl;
 }
 
 function applyPopupPosition(popup, pointer) {
@@ -163,6 +238,10 @@ function isSelectionInRange(text) {
   return text.length >= MIN_SELECTION_LENGTH && text.length <= MAX_SELECTION_LENGTH;
 }
 
+function normalizeLangOrDefault(value, fallback) {
+  return SUPPORTED_LANG_CODES.has(value) ? value : fallback;
+}
+
 async function getLangPrefs() {
   const storage = getStorageArea();
   if (!storage || typeof storage.get !== "function") {
@@ -171,9 +250,11 @@ async function getLangPrefs() {
 
   try {
     const prefs = await storage.get(["lang1", "lang2"]);
+    const lang1 = normalizeLangOrDefault(prefs.lang1, DEFAULT_LANGS.lang1);
+    const lang2 = normalizeLangOrDefault(prefs.lang2, DEFAULT_LANGS.lang2);
     return {
-      lang1: prefs.lang1 || DEFAULT_LANGS.lang1,
-      lang2: prefs.lang2 || DEFAULT_LANGS.lang2,
+      lang1,
+      lang2,
     };
   } catch (_) {
     return { ...DEFAULT_LANGS };
@@ -186,6 +267,10 @@ async function setLangPref(key, value) {
     return;
   }
 
+  if (!SUPPORTED_LANG_CODES.has(value)) {
+    return;
+  }
+
   try {
     await storage.set({ [key]: value });
   } catch (_) {
@@ -193,7 +278,16 @@ async function setLangPref(key, value) {
   }
 }
 
-async function fetchAndRender(text, pointer) {
+async function fetchAndRender(text, pointer, handlers = {}) {
+  const onError = typeof handlers.onError === "function" ? handlers.onError : null;
+  const onSuccess = typeof handlers.onSuccess === "function" ? handlers.onSuccess : null;
+
+  const runtime = getRuntime();
+  if (!runtime || !runtime.id) {
+    onError?.("Extension unavailable");
+    return;
+  }
+
   const prefs = await getLangPrefs();
   const lang1 = prefs.lang1;
   const lang2 = prefs.lang2;
@@ -208,9 +302,18 @@ async function fetchAndRender(text, pointer) {
     },
     (data) => {
       if (!data) {
+        onError?.("Translation unavailable");
         return;
       }
       renderPopup({ data, text, pointer, lang1, lang2 });
+      onSuccess?.();
+    },
+    (reason) => {
+      if (reason === "timeout") {
+        onError?.("Request timed out");
+        return;
+      }
+      onError?.("Extension unavailable");
     },
   );
 }
@@ -226,50 +329,145 @@ function renderPopup({ data, text, pointer, lang1, lang2 }) {
 
   const lang1DirClass = lang1Meta?.rtl ? "rtl" : "";
   const lang2DirClass = lang2Meta?.rtl ? "rtl" : "";
+  const lang1CodeClass = `lang-${lang1}`;
+  const lang2CodeClass = `lang-${lang2}`;
+  const lang1Roman =
+    lang1 === "en" ? "-" : data.roman?.[lang1] || "Romanization unavailable";
+  const lang2Roman =
+    lang2 === "en" ? "-" : data.roman?.[lang2] || "Romanization unavailable";
 
-  popup.innerHTML = `
-    <div class="lex-bar">
-      <span>LEXICON PRO</span>
-      <span class="lex-history-icon ${data.historySaved ? "saved" : ""}" title="Saved to history">
-        ${data.historySaved ? "&#10003;" : ""}
-      </span>
-      <button id="lex-close" type="button" aria-label="Close">X</button>
-    </div>
-    <div class="lex-content">
-      <div class="lex-pane main-pane">
-        <label>English Definition ${data.phonetic ? `(${data.phonetic})` : ""}</label>
-        <div class="lex-word">${text}</div>
-        <div class="lex-text">${data.dict || "Definition not found"}</div>
-      </div>
-      <div class="lex-pane">
-        <label>Native Script</label>
-        ${buildLanguageSelect(lang1, "lang1")}
-        <div class="lex-trans ${lang1DirClass}">${data.trans?.[lang1] || "Translation unavailable"}</div>
-        <div class="lex-roman">${data.roman?.[lang1] || "loading..."}</div>
-        <button class="lex-audio-btn" type="button" data-audio-lang="${lang1}" aria-label="Play audio (${lang1})">
-          <span class="lex-audio-icon">&#128266;</span>
-          <span class="lex-audio-spinner" aria-hidden="true"></span>
-        </button>
-      </div>
-      <div class="lex-pane">
-        <label>Native Script</label>
-        ${buildLanguageSelect(lang2, "lang2")}
-        <div class="lex-trans ${lang2DirClass}">${data.trans?.[lang2] || "Translation unavailable"}</div>
-        <div class="lex-roman">${data.roman?.[lang2] || "loading..."}</div>
-        <button class="lex-audio-btn" type="button" data-audio-lang="${lang2}" aria-label="Play audio (${lang2})">
-          <span class="lex-audio-icon">&#128266;</span>
-          <span class="lex-audio-spinner" aria-hidden="true"></span>
-        </button>
-      </div>
-    </div>
-  `;
+  const barEl = document.createElement("div");
+  barEl.className = "lex-bar";
+
+  const titleEl = document.createElement("span");
+  titleEl.textContent = "TextBridge";
+  barEl.appendChild(titleEl);
+
+  const runtimeStatusEl = document.createElement("span");
+  runtimeStatusEl.className = "lex-runtime-status";
+  runtimeStatusEl.textContent = "";
+  barEl.appendChild(runtimeStatusEl);
+
+  const historyEl = document.createElement("span");
+  historyEl.className = `lex-history-icon ${data.historySaved ? "saved" : ""}`.trim();
+  historyEl.title = "Saved to history";
+  historyEl.textContent = data.historySaved ? "\u2713" : "";
+  barEl.appendChild(historyEl);
+
+  let runtimeStatusTimer = null;
+  function showRuntimeStatus(message, timeoutMs = 1200) {
+    if (activeLexPopup !== popup) {
+      return;
+    }
+    runtimeStatusEl.textContent = message || "";
+    if (runtimeStatusTimer) {
+      clearTimeout(runtimeStatusTimer);
+      runtimeStatusTimer = null;
+    }
+    if (!message) {
+      return;
+    }
+    runtimeStatusTimer = setTimeout(() => {
+      runtimeStatusTimer = null;
+      if (activeLexPopup === popup) {
+        runtimeStatusEl.textContent = "";
+      }
+    }, timeoutMs);
+  }
+
+  const closeBtn = document.createElement("button");
+  closeBtn.id = "lex-close";
+  closeBtn.type = "button";
+  closeBtn.setAttribute("aria-label", "Close");
+  closeBtn.textContent = "X";
+  barEl.appendChild(closeBtn);
+
+  const contentEl = document.createElement("div");
+  contentEl.className = "lex-content";
+
+  const mainPaneEl = document.createElement("div");
+  mainPaneEl.className = "lex-pane main-pane";
+
+  const mainLabelEl = document.createElement("label");
+  mainLabelEl.textContent = `English Definition${data.phonetic ? ` (${data.phonetic})` : ""}`;
+  mainPaneEl.appendChild(mainLabelEl);
+
+  const wordEl = document.createElement("div");
+  wordEl.className = "lex-word";
+  wordEl.textContent = text;
+  mainPaneEl.appendChild(wordEl);
+
+  const dictEl = document.createElement("div");
+  dictEl.className = "lex-text";
+  dictEl.textContent = data.dict || "Definition not found";
+  mainPaneEl.appendChild(dictEl);
+
+  contentEl.appendChild(mainPaneEl);
+
+  function buildTranslationPane(lang, prefKey, dirClass, codeClass, romanizedText) {
+    const paneEl = document.createElement("div");
+    paneEl.className = "lex-pane";
+
+    const labelEl = document.createElement("label");
+    labelEl.textContent = "Native Script";
+    paneEl.appendChild(labelEl);
+
+    const selectEl = buildLanguageSelect(lang, prefKey);
+    paneEl.appendChild(selectEl);
+
+    const transEl = document.createElement("div");
+    transEl.className = `lex-trans ${dirClass} ${codeClass}`.trim();
+    transEl.textContent = data.trans?.[lang] || "Translation unavailable";
+    paneEl.appendChild(transEl);
+
+    const romanEl = document.createElement("div");
+    romanEl.className = "lex-roman";
+    romanEl.textContent = romanizedText;
+    paneEl.appendChild(romanEl);
+
+    const audioBtn = document.createElement("button");
+    audioBtn.className = "lex-audio-btn";
+    audioBtn.type = "button";
+    audioBtn.setAttribute("data-audio-lang", lang);
+    audioBtn.setAttribute("aria-label", `Play audio (${lang})`);
+
+    const iconEl = document.createElement("span");
+    iconEl.className = "lex-audio-icon";
+    iconEl.textContent = "\u{1F50A}";
+    audioBtn.appendChild(iconEl);
+
+    const spinnerEl = document.createElement("span");
+    spinnerEl.className = "lex-audio-spinner";
+    spinnerEl.setAttribute("aria-hidden", "true");
+    audioBtn.appendChild(spinnerEl);
+
+    paneEl.appendChild(audioBtn);
+    return paneEl;
+  }
+
+  contentEl.appendChild(
+    buildTranslationPane(lang1, "lang1", lang1DirClass, lang1CodeClass, lang1Roman),
+  );
+  contentEl.appendChild(
+    buildTranslationPane(lang2, "lang2", lang2DirClass, lang2CodeClass, lang2Roman),
+  );
+
+  popup.appendChild(barEl);
+  popup.appendChild(contentEl);
 
   document.body.appendChild(popup);
   activeLexPopup = popup;
 
   applyPopupPosition(popup, pointer);
+  schedulePopupIdleClose(popup);
 
-  const closeBtn = popup.querySelector("#lex-close");
+  popup.addEventListener("mouseenter", () => {
+    clearPopupIdleTimer();
+  });
+  popup.addEventListener("mouseleave", () => {
+    schedulePopupIdleClose(popup);
+  });
+
   closeBtn?.addEventListener("click", removePopup);
 
   popup.querySelectorAll(".lex-switcher").forEach((selectEl) => {
@@ -277,7 +475,9 @@ function renderPopup({ data, text, pointer, lang1, lang2 }) {
       const target = event.target;
       const prefKey = target.getAttribute("data-pref");
       await setLangPref(prefKey, target.value);
-      fetchAndRender(text, pointer);
+      fetchAndRender(text, pointer, {
+        onError: (msg) => showRuntimeStatus(msg, 1400),
+      });
     });
   });
 
@@ -288,8 +488,10 @@ function renderPopup({ data, text, pointer, lang1, lang2 }) {
       }
 
       const lang = button.getAttribute("data-audio-lang") || "";
-      const speechText = (data.trans?.[lang] || text || "").trim();
+      const translatedText = (data.trans?.[lang] || "").trim();
+      const speechText = lang === "en" ? (translatedText || text || "").trim() : translatedText;
       if (!lang || !speechText) {
+        showRuntimeStatus("Audio unavailable", 1300);
         return;
       }
 
@@ -307,6 +509,7 @@ function renderPopup({ data, text, pointer, lang1, lang2 }) {
 
         if (!response?.ok || !response.dataUrl) {
           button.classList.remove("loading");
+          showRuntimeStatus("Audio unavailable", 1300);
           return;
         }
 
@@ -319,9 +522,11 @@ function renderPopup({ data, text, pointer, lang1, lang2 }) {
           clearLoading();
         } catch (_) {
           clearLoading();
+          showRuntimeStatus("Audio blocked", 1300);
         }
       } catch (_) {
         button.classList.remove("loading");
+        showRuntimeStatus("Audio failed", 1300);
       }
     });
   });
@@ -407,9 +612,11 @@ function installPdfMode() {
     handleSelectionSource(getSelectionAnchorPoint());
   });
 
-  pdfPollTimer = setInterval(() => {
-    handleSelectionSource(getSelectionAnchorPoint());
-  }, PDF_POLL_MS);
+  if (!HAS_PDFJS_SELECTION_BRIDGE) {
+    pdfPollTimer = setInterval(() => {
+      handleSelectionSource(getSelectionAnchorPoint());
+    }, PDF_POLL_MS);
+  }
 }
 
 function installWebMode() {
@@ -435,9 +642,14 @@ function installWebMode() {
   });
 }
 
-if (window.location.protocol === "file:" && /\.pdf$/i.test(window.location.pathname)) {
+const runtimeForFilePdfWarning = getRuntime();
+if (
+  window.location.protocol === "file:" &&
+  /\.pdf$/i.test(window.location.pathname) &&
+  (!runtimeForFilePdfWarning || !runtimeForFilePdfWarning.id)
+) {
   console.warn(
-    "Lexicon Pro: For local PDFs, enable 'Allow access to file URLs' in chrome://extensions for this extension.",
+    "TextBridge: For local PDFs, enable 'Allow access to file URLs' in chrome://extensions for this extension.",
   );
 }
 

@@ -1,0 +1,13 @@
+{
+  "mode": "translation",
+  "targetLang": "ur",
+  "input": {
+    "ok": false,
+    "status": 0,
+    "data": null
+  },
+  "expected": {
+    "translatedText": "",
+    "romanized": ""
+  }
+}

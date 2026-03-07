@@ -1,0 +1,19 @@
+{
+  "mode": "translation",
+  "targetLang": "ur",
+  "input": {
+    "ok": true,
+    "data": [
+      [
+        ["دوبارہ دریافت", "rediscover", null, null, 3],
+        [null, null, "dubarah daryaft", "ˌrēdəˈskəvər"]
+      ],
+      null,
+      "en"
+    ]
+  },
+  "expected": {
+    "translatedText": "دوبارہ دریافت",
+    "romanized": "dubarah daryaft"
+  }
+}

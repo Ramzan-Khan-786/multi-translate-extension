@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "Lexicon Pro: Advanced Personal Reader",
+  "name": "TextBridge",
   "version": "3.3.1",
   "description": "Capture selected English text and show definition, native translation, and romanized transliteration.",
   "permissions": [
@@ -23,7 +23,7 @@
     "service_worker": "background.js"
   },
   "action": {
-    "default_title": "Lexicon Pro"
+    "default_title": "TextBridge"
   },
   "content_scripts": [
     {
@@ -36,7 +36,7 @@
   ],
   "web_accessible_resources": [
     {
-      "resources": ["content.js", "styles.css"],
+      "resources": ["content.js", "styles.css", "assets/fonts/*.woff2"],
       "matches": ["<all_urls>"]
     }
   ],
