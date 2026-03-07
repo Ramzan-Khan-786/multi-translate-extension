@@ -22,7 +22,7 @@
     "https://sheets.googleapis.com/*"
   ],
   "oauth2": {
-    "client_id": "263619000588-b4kgk32oh3isjk8ovi1t15l079ict63c.apps.googleusercontent.com",
+    "client_id": "REPLACE_WITH_EXTENSION_OAUTH_CLIENT_ID",
     "scopes": [
       "https://www.googleapis.com/auth/spreadsheets"
     ]
@@ -36,17 +36,30 @@
   "options_page": "options.html",
   "content_scripts": [
     {
-      "matches": ["<all_urls>", "file:///*"],
-      "js": ["content.js"],
-      "css": ["styles.css"],
+      "matches": [
+        "<all_urls>",
+        "file:///*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "css": [
+        "styles.css"
+      ],
       "run_at": "document_idle",
       "all_frames": true
     }
   ],
   "web_accessible_resources": [
     {
-      "resources": ["content.js", "styles.css", "assets/fonts/*.woff2"],
-      "matches": ["<all_urls>"]
+      "resources": [
+        "content.js",
+        "styles.css",
+        "assets/fonts/*.woff2"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
     }
   ],
   "icons": {

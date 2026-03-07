@@ -4,7 +4,10 @@
   "description": "",
   "main": "background.js",
   "scripts": {
-    "test": "npm run test:romanization",
+    "build": "npm run build:config",
+    "build:config": "node scripts/build-config.js",
+    "check:config": "node scripts/build-config.js --check",
+    "test": "npm run check:config && npm run test:romanization",
     "test:romanization": "node tests/romanization-service.test.js"
   },
   "keywords": [],

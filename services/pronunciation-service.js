@@ -10,12 +10,37 @@
   const CHROME_TTS_PITCH = 1;
   const CHROME_TTS_VOLUME = 1;
   const CHROME_TTS_START_TIMEOUT_MS = 2200;
+  const RUNTIME_ENDPOINTS = global.TextBridgeRuntimeConfig?.endpoints || {};
+  const TRANSLATE_WEB_BASE = normalizeBaseUrl(
+    RUNTIME_ENDPOINTS.translateWebBase,
+    "https://translate.google.com",
+  );
+  const TRANSLATE_API_BASE = normalizeBaseUrl(
+    RUNTIME_ENDPOINTS.translateApiBase,
+    "https://translate.googleapis.com",
+  );
 
   const VOICE_HINTS = {
     ur: ["urdu", "اردو", "pak", "asad"],
     hi: ["hindi", "हिन्द", "india"],
     en: ["english", "google"],
   };
+
+  function normalizeBaseUrl(value, fallback) {
+    const raw = String(value || fallback || "").trim();
+    if (!raw) {
+      return String(fallback || "").trim();
+    }
+    try {
+      return new URL(raw).toString().replace(/\/+$/, "");
+    } catch (_) {
+      return String(fallback || "").trim().replace(/\/+$/, "");
+    }
+  }
+
+  function joinUrl(base, path) {
+    return `${String(base || "").replace(/\/+$/, "")}/${String(path || "").replace(/^\/+/, "")}`;
+  }
 
   function normalizeLang(value) {
     return (value || "").toLowerCase().trim();
@@ -223,13 +248,13 @@
   }
 
   function buildGoogleTwObUrl(text, langCode) {
-    return `https://translate.google.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(text)}&tl=${encodeURIComponent(
+    return `${joinUrl(TRANSLATE_WEB_BASE, "/translate_tts")}?ie=UTF-8&q=${encodeURIComponent(text)}&tl=${encodeURIComponent(
       langCode,
     )}&client=tw-ob&ttsspeed=1`;
   }
 
   function buildGoogleGtxUrl(text, langCode) {
-    return `https://translate.googleapis.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(text)}&tl=${encodeURIComponent(
+    return `${joinUrl(TRANSLATE_API_BASE, "/translate_tts")}?ie=UTF-8&q=${encodeURIComponent(text)}&tl=${encodeURIComponent(
       langCode,
     )}&client=gtx`;
   }

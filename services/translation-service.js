@@ -3,14 +3,42 @@
   const MAX_RETRIES = 1;
   const RETRY_BASE_DELAY_MS = 140;
   const RETRY_JITTER_MS = 200;
+  const RUNTIME_ENDPOINTS = global.TextBridgeRuntimeConfig?.endpoints || {};
+  const TRANSLATE_API_BASE = normalizeBaseUrl(
+    RUNTIME_ENDPOINTS.translateApiBase,
+    "https://translate.googleapis.com",
+  );
+  const DICTIONARY_API_BASE = normalizeBaseUrl(
+    RUNTIME_ENDPOINTS.dictionaryApiBase,
+    "https://api.dictionaryapi.dev",
+  );
+
+  function normalizeBaseUrl(value, fallback) {
+    const raw = String(value || fallback || "").trim();
+    if (!raw) {
+      return String(fallback || "").trim();
+    }
+    try {
+      return new URL(raw).toString().replace(/\/+$/, "");
+    } catch (_) {
+      return String(fallback || "").trim().replace(/\/+$/, "");
+    }
+  }
+
+  function joinUrl(base, path) {
+    return `${String(base || "").replace(/\/+$/, "")}/${String(path || "").replace(/^\/+/, "")}`;
+  }
 
   function buildTranslateUrl(text, targetLang, sourceLang = "auto") {
     const q = encodeURIComponent(text);
-    return `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${sourceLang}&tl=${targetLang}&dt=t&dt=rm&q=${q}`;
+    return `${joinUrl(TRANSLATE_API_BASE, "/translate_a/single")}?client=gtx&sl=${sourceLang}&tl=${targetLang}&dt=t&dt=rm&q=${q}`;
   }
 
   function buildDictionaryUrl(text) {
-    return `https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(text.toLowerCase())}`;
+    return joinUrl(
+      DICTIONARY_API_BASE,
+      `/api/v2/entries/en/${encodeURIComponent(text.toLowerCase())}`,
+    );
   }
 
   function sleep(ms) {

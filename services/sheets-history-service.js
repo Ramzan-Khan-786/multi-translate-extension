@@ -17,9 +17,30 @@
 
   const HISTORY_HEADERS = ["word", "definition", "ur", "hi", "timestamp", "url"];
   const QUICK_HEADERS = ["En", "Ur", "Hi"];
-  const SHEETS_BASE_URL = "https://sheets.googleapis.com/v4/spreadsheets";
+  const RUNTIME_ENDPOINTS = global.TextBridgeRuntimeConfig?.endpoints || {};
+  const SHEETS_BASE_URL = normalizeSheetsBaseUrl(RUNTIME_ENDPOINTS.sheetsApiBase);
   const READY_SHEET_CACHE = new Set();
   let writeQueue = Promise.resolve();
+
+  function normalizeBaseUrl(value, fallback) {
+    const raw = String(value || fallback || "").trim();
+    if (!raw) {
+      return String(fallback || "").trim();
+    }
+    try {
+      return new URL(raw).toString().replace(/\/+$/, "");
+    } catch (_) {
+      return String(fallback || "").trim().replace(/\/+$/, "");
+    }
+  }
+
+  function normalizeSheetsBaseUrl(value) {
+    const base = normalizeBaseUrl(value, "https://sheets.googleapis.com");
+    if (/\/v4\/spreadsheets$/i.test(base)) {
+      return base;
+    }
+    return `${base}/v4/spreadsheets`;
+  }
 
   function normalizeSheetName(value, fallbackName = DEFAULT_CONFIG.sheetName) {
     const text = String(value || "").trim();

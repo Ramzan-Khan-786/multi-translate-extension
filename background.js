@@ -9,6 +9,7 @@
  */
 
 importScripts(
+  "services/runtime-config.js",
   "services/translation-service.js",
   "services/romanization-service.js",
   "services/pronunciation-service.js",
@@ -36,11 +37,48 @@ const LEX_HISTORY_LIMIT = 500;
 const LOCAL_HISTORY_MODE_KEY = "sheets_local_history_mode";
 const LOCAL_HISTORY_MODE_HYBRID = "hybrid";
 const LOCAL_HISTORY_MODE_SHEET_ONLY = "sheet_only";
+const RUNTIME_ENDPOINTS = globalThis.TextBridgeRuntimeConfig?.endpoints || {};
+const TRANSLATE_WEB_BASE = normalizeBaseUrl(
+  RUNTIME_ENDPOINTS.translateWebBase,
+  "https://translate.google.com",
+);
+const TRANSLATE_API_BASE = normalizeBaseUrl(
+  RUNTIME_ENDPOINTS.translateApiBase,
+  "https://translate.googleapis.com",
+);
+const TTS_WEB_RULE_FILTER = buildTtsUrlFilter(TRANSLATE_WEB_BASE, "/translate_tts");
+const TTS_API_RULE_FILTER = buildTtsUrlFilter(TRANSLATE_API_BASE, "/translate_tts");
 const inflightTranslationRequests = new Map();
 let translationCacheMemory = [];
 let translationCacheHydrated = false;
 let localHistoryModeHydrated = false;
 let localHistoryModeCache = LOCAL_HISTORY_MODE_HYBRID;
+
+function normalizeBaseUrl(value, fallback) {
+  const raw = String(value || fallback || "").trim();
+  if (!raw) {
+    return String(fallback || "").trim();
+  }
+
+  try {
+    return new URL(raw).toString().replace(/\/+$/, "");
+  } catch (_) {
+    return String(fallback || "").trim().replace(/\/+$/, "");
+  }
+}
+
+function buildTtsUrlFilter(baseUrl, pathSuffix) {
+  const fallback = "||translate.google.com/translate_tts";
+  const suffix = String(pathSuffix || "").startsWith("/") ? pathSuffix : `/${pathSuffix || ""}`;
+
+  try {
+    const parsed = new URL(baseUrl);
+    const pathname = `${parsed.pathname.replace(/\/+$/, "")}${suffix}`.replace(/\/{2,}/g, "/");
+    return `||${parsed.host}${pathname}`;
+  } catch (_) {
+    return fallback;
+  }
+}
 
 chrome.runtime.onInstalled.addListener(async () => {
   await chrome.storage.local.set(DEFAULTS);
@@ -92,7 +130,7 @@ async function ensureDynamicRules() {
             requestHeaders: [{ header: "referer", operation: "remove" }],
           },
           condition: {
-            urlFilter: "||translate.google.com/translate_tts",
+            urlFilter: TTS_WEB_RULE_FILTER,
             resourceTypes: ["media", "xmlhttprequest", "other"],
           },
         },
@@ -104,7 +142,7 @@ async function ensureDynamicRules() {
             requestHeaders: [{ header: "referer", operation: "remove" }],
           },
           condition: {
-            urlFilter: "||translate.googleapis.com/translate_tts",
+            urlFilter: TTS_API_RULE_FILTER,
             resourceTypes: ["media", "xmlhttprequest", "other"],
           },
         },

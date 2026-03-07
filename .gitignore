@@ -14,7 +14,6 @@ coverage/
 
 # Environment / local config
 .env
-.env.*
 !.env.example
 
 # Logs
@@ -37,3 +36,4 @@ desktop.ini
 *.user
 *.swp
 *.tmp
+manifest.json 
