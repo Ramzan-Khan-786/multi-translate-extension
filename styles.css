@@ -207,7 +207,7 @@
 }
 
 .lex-trans.lang-ur {
-  font-family: "Noto Nastaliq Urdu", serif !important;
+  font-family: "TextBridge Noto Nastaliq Runtime", "Noto Nastaliq Urdu", serif !important;
   font-weight: 400;
   font-size: 23px !important;
   line-height: 1.72 !important;

@@ -16,6 +16,8 @@ const POPUP_IDLE_CLOSE_MS = 5000;
 const IS_PDF_MODE = window.location.protocol === "chrome-extension:";
 const HAS_PDFJS_SELECTION_BRIDGE = IS_PDF_MODE && !!document.getElementById("pdfPages");
 const SUPPORTED_LANG_CODES = new Set(LANGUAGE_OPTIONS.map((item) => item.code));
+const URDU_FONT_ASSET_PATH = "assets/fonts/NotoNastaliqUrdu-Arabic.woff2";
+const URDU_FONT_RUNTIME_FAMILY = "TextBridge Noto Nastaliq Runtime";
 
 let lastDispatchedSelection = "";
 let selectionDebounceId = null;
@@ -31,6 +33,8 @@ let langPrefsLoaded = false;
 let pointerFrameScheduled = false;
 let pendingPointer = null;
 let queuedSelectionText = "";
+let urduFontReady = false;
+let urduFontLoadPromise = null;
 
 function getRuntime() {
   const c = globalThis.chrome;
@@ -40,6 +44,75 @@ function getRuntime() {
 function getStorageArea() {
   const c = globalThis.chrome;
   return c && c.storage && c.storage.local ? c.storage.local : null;
+}
+
+function applyUrduTypography(el) {
+  if (!el) {
+    return;
+  }
+
+  const family = urduFontReady
+    ? `"${URDU_FONT_RUNTIME_FAMILY}", "Noto Nastaliq Urdu", serif`
+    : '"Noto Nastaliq Urdu", serif';
+
+  el.style.setProperty("font-family", family, "important");
+  el.style.setProperty("font-size", "23px", "important");
+  el.style.setProperty("line-height", "1.72", "important");
+  el.style.setProperty("font-feature-settings", '"liga" 1, "calt" 1', "important");
+}
+
+async function ensureUrduFontLoaded() {
+  if (urduFontReady) {
+    return true;
+  }
+  if (urduFontLoadPromise) {
+    return urduFontLoadPromise;
+  }
+  if (typeof FontFace !== "function" || !document.fonts) {
+    return false;
+  }
+
+  const runtime = getRuntime();
+  if (!runtime || typeof runtime.getURL !== "function") {
+    return false;
+  }
+
+  urduFontLoadPromise = (async () => {
+    const fontUrl = runtime.getURL(URDU_FONT_ASSET_PATH);
+    const response = await fetch(fontUrl);
+    if (!response.ok) {
+      return false;
+    }
+
+    const bytes = await response.arrayBuffer();
+    if (!bytes || bytes.byteLength === 0) {
+      return false;
+    }
+
+    const face400 = new FontFace(URDU_FONT_RUNTIME_FAMILY, bytes.slice(0), {
+      style: "normal",
+      weight: "400",
+    });
+    const face700 = new FontFace(URDU_FONT_RUNTIME_FAMILY, bytes.slice(0), {
+      style: "normal",
+      weight: "700",
+    });
+
+    await face400.load();
+    await face700.load();
+    document.fonts.add(face400);
+    document.fonts.add(face700);
+    urduFontReady = true;
+    return true;
+  })()
+    .catch(() => false)
+    .finally(() => {
+      if (!urduFontReady) {
+        urduFontLoadPromise = null;
+      }
+    });
+
+  return urduFontLoadPromise;
 }
 
 function safeSendMessage(message, onSuccess, onError, timeoutMs = MESSAGE_RESPONSE_TIMEOUT_MS) {
@@ -496,11 +569,13 @@ function renderPopup({ data, text, pointer, lang1, lang2 }) {
     transEl.className = `lex-trans ${dirClass} ${codeClass}`.trim();
     transEl.textContent = data.trans?.[lang] || "Translation unavailable";
     if (lang === "ur") {
-      // Keep Urdu typography stable even when host pages apply aggressive global font rules.
-      transEl.style.setProperty("font-family", '"Noto Nastaliq Urdu", serif', "important");
-      transEl.style.setProperty("font-size", "23px", "important");
-      transEl.style.setProperty("line-height", "1.72", "important");
-      transEl.style.setProperty("font-feature-settings", '"liga" 1, "calt" 1', "important");
+      applyUrduTypography(transEl);
+      void ensureUrduFontLoaded().then((loaded) => {
+        if (!loaded || activeLexPopup !== popup || !transEl.isConnected) {
+          return;
+        }
+        applyUrduTypography(transEl);
+      });
     }
     paneEl.appendChild(transEl);
 
@@ -763,6 +838,7 @@ if (
   );
 }
 
+void ensureUrduFontLoaded();
 installSharedListeners();
 if (IS_PDF_MODE) {
   installPdfMode();
