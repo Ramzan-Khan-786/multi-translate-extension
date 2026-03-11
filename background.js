@@ -25,6 +25,12 @@ const DEFAULTS = {
   lang1: "ur",
   lang2: "hi",
 };
+const EXTENSION_ENABLED_KEY = "textbridge_enabled";
+const EXTENSION_ENABLED_DEFAULT = true;
+const ACTION_BADGE_ON = "ON";
+const ACTION_BADGE_OFF = "OFF";
+const ACTION_BADGE_COLOR_ON = "#137333";
+const ACTION_BADGE_COLOR_OFF = "#b0212a";
 const SUPPORTED_LANGS = new Set(["en", "ur", "hi"]);
 
 const VIEWER_PAGE = "viewer.html";
@@ -58,6 +64,8 @@ let translationCacheMemory = [];
 let translationCacheHydrated = false;
 let localHistoryModeHydrated = false;
 let localHistoryModeCache = LOCAL_HISTORY_MODE_HYBRID;
+let extensionEnabledHydrated = false;
+let extensionEnabledCache = EXTENSION_ENABLED_DEFAULT;
 
 function normalizeBaseUrl(value, fallback) {
   const raw = String(value || fallback || "").trim();
@@ -87,18 +95,34 @@ function buildTtsUrlFilter(baseUrl, pathSuffix) {
 
 chrome.runtime.onInstalled.addListener(async () => {
   await chrome.storage.local.set(DEFAULTS);
+  try {
+    const data = await chrome.storage.local.get([EXTENSION_ENABLED_KEY]);
+    if (typeof data[EXTENSION_ENABLED_KEY] !== "boolean") {
+      await chrome.storage.local.set({ [EXTENSION_ENABLED_KEY]: EXTENSION_ENABLED_DEFAULT });
+    }
+  } catch (_) {
+    // ignore default enable failures
+  }
   await ensureDynamicRules();
   await cleanupTranslationCache();
+  await syncActionBadge();
 });
 
 chrome.runtime.onStartup.addListener(() => {
   ensureDynamicRules();
   cleanupTranslationCache();
+  syncActionBadge();
 });
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== "local") {
     return;
+  }
+
+  if (changes[EXTENSION_ENABLED_KEY]) {
+    extensionEnabledCache = normalizeExtensionEnabled(changes[EXTENSION_ENABLED_KEY].newValue);
+    extensionEnabledHydrated = true;
+    updateActionBadge(extensionEnabledCache);
   }
 
   if (changes[LOCAL_HISTORY_MODE_KEY]) {
@@ -207,6 +231,44 @@ async function isPdfByContentType(url) {
   }
 }
 
+async function openPdfViewerForTab(tabId) {
+  if (!tabId || tabId < 0) {
+    return { ok: false, error: "Missing tab." };
+  }
+
+  let tab;
+  try {
+    tab = await chrome.tabs.get(tabId);
+  } catch (_) {
+    return { ok: false, error: "Tab not found." };
+  }
+
+  const url = tab?.url || "";
+  if (!url) {
+    return { ok: false, error: "No URL found." };
+  }
+
+  if (isViewerUrl(url)) {
+    return { ok: false, reason: "already_viewer" };
+  }
+
+  let shouldRedirect = isPdfByPattern(url);
+  if (!shouldRedirect) {
+    shouldRedirect = await isPdfByContentType(url);
+  }
+
+  if (!shouldRedirect) {
+    return { ok: false, reason: "not_pdf" };
+  }
+
+  try {
+    await chrome.tabs.update(tabId, { url: buildViewerUrl(url) });
+    return { ok: true };
+  } catch (_) {
+    return { ok: false, error: "Failed to open PDF viewer." };
+  }
+}
+
 async function maybeRedirectPdfNavigation(details) {
   if (details.frameId !== 0 || !details.tabId || details.tabId < 0) {
     return;
@@ -233,7 +295,12 @@ async function maybeRedirectPdfNavigation(details) {
 }
 
 chrome.webNavigation.onBeforeNavigate.addListener((details) => {
-  maybeRedirectPdfNavigation(details);
+  getExtensionEnabled().then((enabled) => {
+    if (!enabled) {
+      return;
+    }
+    maybeRedirectPdfNavigation(details);
+  });
 });
 
 chrome.action.onClicked.addListener(async (tab) => {
@@ -271,6 +338,44 @@ function normalizeLocalHistoryMode(value) {
   return String(value || "").toLowerCase() === LOCAL_HISTORY_MODE_SHEET_ONLY
     ? LOCAL_HISTORY_MODE_SHEET_ONLY
     : LOCAL_HISTORY_MODE_HYBRID;
+}
+
+function normalizeExtensionEnabled(value) {
+  return value !== false;
+}
+
+function updateActionBadge(enabled) {
+  const isEnabled = !!enabled;
+  const text = isEnabled ? ACTION_BADGE_ON : ACTION_BADGE_OFF;
+  const color = isEnabled ? ACTION_BADGE_COLOR_ON : ACTION_BADGE_COLOR_OFF;
+
+  try {
+    chrome.action.setBadgeText({ text });
+    chrome.action.setBadgeBackgroundColor({ color });
+    chrome.action.setTitle({ title: isEnabled ? "TextBridge (On)" : "TextBridge (Off)" });
+  } catch (_) {
+    // ignore action badge errors
+  }
+}
+
+async function getExtensionEnabled() {
+  if (extensionEnabledHydrated) {
+    return extensionEnabledCache;
+  }
+
+  try {
+    const data = await chrome.storage.local.get([EXTENSION_ENABLED_KEY]);
+    extensionEnabledCache = normalizeExtensionEnabled(data[EXTENSION_ENABLED_KEY]);
+  } catch (_) {
+    extensionEnabledCache = EXTENSION_ENABLED_DEFAULT;
+  }
+  extensionEnabledHydrated = true;
+  return extensionEnabledCache;
+}
+
+async function syncActionBadge() {
+  const enabled = await getExtensionEnabled();
+  updateActionBadge(enabled);
 }
 
 async function getLocalHistoryMode() {
@@ -560,6 +665,13 @@ function normalizeRequestedLang(value, fallback) {
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type === "OPEN_PDF_VIEWER") {
+    openPdfViewerForTab(message.tabId)
+      .then(sendResponse)
+      .catch(() => sendResponse({ ok: false, error: "Could not open PDF viewer." }));
+    return true;
+  }
+
   if (message?.type === "SHEETS_GET_CONFIG") {
     if (!globalThis.SheetsHistoryService?.getConfig) {
       sendResponse({ ok: false, error: "Sheets service unavailable." });

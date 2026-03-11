@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TextBridge</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --ink: #1c1b16;
+        --muted: #5a5a52;
+        --card: #fffdf8;
+        --border: #eadfce;
+        --accent: #1f7a5a;
+        --accent-soft: #e6f3ed;
+        --accent-warm: #f1a23c;
+        --danger: #b0212a;
+        --shadow: 0 12px 28px rgba(41, 27, 5, 0.18);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        padding: 12px;
+        font-family: "Trebuchet MS", "Lucida Sans Unicode", "Lucida Grande", sans-serif;
+        background: linear-gradient(135deg, #fff2e2 0%, #edf6ff 100%);
+        color: var(--ink);
+      }
+
+      body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        background: radial-gradient(circle at 12% 18%, rgba(255, 214, 165, 0.45), transparent 45%),
+          radial-gradient(circle at 88% 12%, rgba(166, 214, 255, 0.38), transparent 40%),
+          radial-gradient(circle at 22% 88%, rgba(255, 233, 199, 0.38), transparent 35%);
+        pointer-events: none;
+      }
+
+      .shell {
+        position: relative;
+        z-index: 1;
+        width: 260px;
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        padding: 14px;
+        box-shadow: var(--shadow);
+        animation: pop-in 260ms ease-out;
+      }
+
+      @keyframes pop-in {
+        from {
+          transform: translateY(6px) scale(0.985);
+          opacity: 0;
+        }
+        to {
+          transform: translateY(0) scale(1);
+          opacity: 1;
+        }
+      }
+
+      header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 10px;
+      }
+
+      .title {
+        font-size: 16px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+      }
+
+      .badge {
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        padding: 4px 8px;
+        border-radius: 999px;
+        background: var(--accent-soft);
+        color: var(--accent);
+        border: 1px solid rgba(31, 122, 90, 0.2);
+        text-transform: uppercase;
+      }
+
+      .badge.is-off {
+        background: #fdeaea;
+        color: var(--danger);
+        border-color: rgba(176, 33, 42, 0.25);
+      }
+
+      .toggle-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 10px 12px;
+        border-radius: 12px;
+        background: #fff6ea;
+        border: 1px solid #f3d7b1;
+      }
+
+      .toggle-label {
+        font-size: 13px;
+        font-weight: 600;
+      }
+
+      .switch {
+        position: relative;
+        display: inline-block;
+        width: 46px;
+        height: 24px;
+      }
+
+      .switch input {
+        opacity: 0;
+        width: 0;
+        height: 0;
+      }
+
+      .slider {
+        position: absolute;
+        cursor: pointer;
+        inset: 0;
+        background: #d8d1c6;
+        border-radius: 999px;
+        transition: background 180ms ease;
+      }
+
+      .slider::before {
+        content: "";
+        position: absolute;
+        height: 18px;
+        width: 18px;
+        left: 3px;
+        top: 3px;
+        background: #fff;
+        border-radius: 50%;
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+        transition: transform 180ms ease;
+      }
+
+      .switch input:checked + .slider {
+        background: var(--accent);
+      }
+
+      .switch input:checked + .slider::before {
+        transform: translateX(22px);
+      }
+
+      .hint {
+        margin: 10px 2px 12px;
+        font-size: 12px;
+        color: var(--muted);
+        line-height: 1.4;
+      }
+
+      .pdf-btn {
+        width: 100%;
+        border: none;
+        border-radius: 10px;
+        padding: 9px 12px;
+        font-size: 13px;
+        font-weight: 700;
+        background: linear-gradient(120deg, var(--accent) 0%, #2d9a6f 100%);
+        color: #fff;
+        cursor: pointer;
+        transition: transform 160ms ease, box-shadow 160ms ease;
+      }
+
+      .pdf-btn:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 8px 18px rgba(31, 122, 90, 0.25);
+      }
+
+      .pdf-btn:disabled {
+        cursor: not-allowed;
+        background: #c9c7c0;
+        box-shadow: none;
+        transform: none;
+      }
+
+      .status {
+        margin-top: 10px;
+        min-height: 18px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      .status.error {
+        color: var(--danger);
+      }
+
+      .status.ok {
+        color: #0f7f3f;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <header>
+        <div class="title">TextBridge</div>
+        <div id="stateBadge" class="badge">On</div>
+      </header>
+
+      <div class="toggle-row">
+        <div class="toggle-label">Enable while reading</div>
+        <label class="switch">
+          <input id="enabledToggle" type="checkbox" />
+          <span class="slider"></span>
+        </label>
+      </div>
+
+      <div class="hint">Turn this off when you want a clean page with no translation popups.</div>
+
+      <button id="pdfBtn" class="pdf-btn" type="button">Open PDF viewer</button>
+      <div id="status" class="status"></div>
+    </div>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

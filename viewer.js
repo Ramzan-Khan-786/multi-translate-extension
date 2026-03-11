@@ -10,6 +10,16 @@
   const pageCountLabel = document.getElementById("pageCountLabel");
   const ocrToggle = document.getElementById("ocrToggle");
   const lowResourceToggle = document.getElementById("lowResourceToggle");
+  const highlightToggle = document.getElementById("highlightToggle");
+  const eraseToggle = document.getElementById("eraseToggle");
+  const addBookmarkBtn = document.getElementById("addBookmarkBtn");
+  const toggleBookmarksBtn = document.getElementById("toggleBookmarksBtn");
+  const downloadPdfBtn = document.getElementById("downloadPdfBtn");
+  const highlightColorPicker = document.getElementById("highlightColorPicker");
+  const bookmarkPanel = document.getElementById("bookmarkPanel");
+  const bookmarkList = document.getElementById("bookmarkList");
+  const bookmarkEmpty = document.getElementById("bookmarkEmpty");
+  const closeBookmarkPanel = document.getElementById("closeBookmarkPanel");
 
   const WORKER_URL = "pdfjs/pdf.worker.min.js";
   const DEFAULT_SCALE_VALUE = "page-width";
@@ -30,6 +40,14 @@
   const STATUS_CLEAR_DEFAULT_MS = 1100;
   const OCR_ENABLED_KEY = "pdf_ocr_enabled";
   const LOW_RESOURCE_KEY = "pdf_low_resource_mode";
+  const HIGHLIGHT_COLOR_KEY = "pdf_highlight_color";
+  const PDF_ANNOTATIONS_KEY = "pdf_annotations_v1";
+  const MIN_HIGHLIGHT_RECT_PX = 2;
+  const DEFAULT_HIGHLIGHT_COLOR = "#ffe082";
+  const HIGHLIGHT_EXPORT_OPACITY = 0.35;
+  const ANNOTATION_EDITOR_PREFIX = "pdfjs_internal_editor_";
+  const EXPORT_ANNOTATION_PREFIX = `${ANNOTATION_EDITOR_PREFIX}textbridge_highlight_`;
+  const BOOKMARK_AUTOHIDE_MS = 5000;
 
   let selectionDebounce = null;
   let lastSelection = "";
@@ -55,6 +73,14 @@
   let selectionDebounceMs = SELECTION_DEBOUNCE_MS;
   let cleanupIdleMs = CLEANUP_IDLE_MS;
   let ocrThrottleMs = OCR_THROTTLE_MS;
+  let highlightMode = false;
+  let eraseMode = false;
+  let currentDocId = "";
+  let pdfAnnotations = { highlights: [], bookmarks: [] };
+  let annotationsReady = false;
+  let highlightColor = DEFAULT_HIGHLIGHT_COLOR;
+  let exportAnnotationIds = new Set();
+  let bookmarkAutoHideTimer = null;
 
   function raf(fn) {
     requestAnimationFrame(fn);
@@ -64,9 +90,51 @@
     return Math.max(min, Math.min(max, value));
   }
 
+  function clamp01(value) {
+    return clamp(value, 0, 1);
+  }
+
   function getStorageArea() {
     const c = globalThis.chrome;
     return c && c.storage && c.storage.local ? c.storage.local : null;
+  }
+
+  function createId() {
+    if (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function") {
+      return globalThis.crypto.randomUUID();
+    }
+    return `id_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
+  }
+
+  function normalizeHexColor(value) {
+    const raw = String(value || "").trim().toLowerCase();
+    if (!raw) {
+      return DEFAULT_HIGHLIGHT_COLOR;
+    }
+    if (/^#[0-9a-f]{6}$/i.test(raw)) {
+      return raw;
+    }
+    if (/^#[0-9a-f]{3}$/i.test(raw)) {
+      const r = raw[1];
+      const g = raw[2];
+      const b = raw[3];
+      return `#${r}${r}${g}${g}${b}${b}`;
+    }
+    return DEFAULT_HIGHLIGHT_COLOR;
+  }
+
+  function hexToRgbArray(value) {
+    const hex = normalizeHexColor(value).replace("#", "");
+    const r = parseInt(hex.slice(0, 2), 16);
+    const g = parseInt(hex.slice(2, 4), 16);
+    const b = parseInt(hex.slice(4, 6), 16);
+    return [r, g, b];
+  }
+
+  function hexToRgba(value, alpha) {
+    const [r, g, b] = hexToRgbArray(value);
+    const a = Math.max(0, Math.min(1, Number(alpha) || 0));
+    return `rgba(${r}, ${g}, ${b}, ${a})`;
   }
 
   function isLowEndDevice() {
@@ -87,16 +155,18 @@
     const defaults = {
       [OCR_ENABLED_KEY]: !lowEnd,
       [LOW_RESOURCE_KEY]: lowEnd,
+      [HIGHLIGHT_COLOR_KEY]: DEFAULT_HIGHLIGHT_COLOR,
     };
 
     if (!storage || typeof storage.get !== "function") {
       ocrEnabled = defaults[OCR_ENABLED_KEY];
       lowResourceMode = defaults[LOW_RESOURCE_KEY];
+      highlightColor = defaults[HIGHLIGHT_COLOR_KEY];
       return;
     }
 
     try {
-      const settings = await storage.get([OCR_ENABLED_KEY, LOW_RESOURCE_KEY]);
+      const settings = await storage.get([OCR_ENABLED_KEY, LOW_RESOURCE_KEY, HIGHLIGHT_COLOR_KEY]);
       ocrEnabled =
         typeof settings[OCR_ENABLED_KEY] === "boolean"
           ? settings[OCR_ENABLED_KEY]
@@ -105,9 +175,14 @@
         typeof settings[LOW_RESOURCE_KEY] === "boolean"
           ? settings[LOW_RESOURCE_KEY]
           : defaults[LOW_RESOURCE_KEY];
+      highlightColor =
+        typeof settings[HIGHLIGHT_COLOR_KEY] === "string" && settings[HIGHLIGHT_COLOR_KEY]
+          ? settings[HIGHLIGHT_COLOR_KEY]
+          : defaults[HIGHLIGHT_COLOR_KEY];
     } catch (_) {
       ocrEnabled = defaults[OCR_ENABLED_KEY];
       lowResourceMode = defaults[LOW_RESOURCE_KEY];
+      highlightColor = defaults[HIGHLIGHT_COLOR_KEY];
     }
   }
 
@@ -124,6 +199,62 @@
     }
   }
 
+  function normalizeAnnotationPayload(payload) {
+    return {
+      highlights: Array.isArray(payload?.highlights) ? payload.highlights : [],
+      bookmarks: Array.isArray(payload?.bookmarks) ? payload.bookmarks : [],
+    };
+  }
+
+  async function readAnnotationStore() {
+    const storage = getStorageArea();
+    if (!storage || typeof storage.get !== "function") {
+      return {};
+    }
+
+    try {
+      const data = await storage.get([PDF_ANNOTATIONS_KEY]);
+      const store = data[PDF_ANNOTATIONS_KEY];
+      return store && typeof store === "object" ? store : {};
+    } catch (_) {
+      return {};
+    }
+  }
+
+  async function loadAnnotationsForDoc(docId) {
+    annotationsReady = false;
+    pdfAnnotations = { highlights: [], bookmarks: [] };
+    if (!docId) {
+      annotationsReady = true;
+      return;
+    }
+
+    const store = await readAnnotationStore();
+    if (Object.prototype.hasOwnProperty.call(store, docId)) {
+      pdfAnnotations = normalizeAnnotationPayload(store[docId]);
+    } else {
+      pdfAnnotations = { highlights: [], bookmarks: [] };
+    }
+    annotationsReady = true;
+  }
+
+  async function saveAnnotationsForDoc(docId) {
+    const storage = getStorageArea();
+    if (!storage || typeof storage.set !== "function" || !docId) {
+      return;
+    }
+
+    try {
+      const data = await storage.get([PDF_ANNOTATIONS_KEY]);
+      const store = data[PDF_ANNOTATIONS_KEY];
+      const nextStore = store && typeof store === "object" ? { ...store } : {};
+      nextStore[docId] = pdfAnnotations;
+      await storage.set({ [PDF_ANNOTATIONS_KEY]: nextStore });
+    } catch (_) {
+      // ignore storage failures
+    }
+  }
+
   function syncSettingsUi() {
     if (ocrToggle) {
       ocrToggle.checked = !!ocrEnabled;
@@ -131,6 +262,20 @@
     if (lowResourceToggle) {
       lowResourceToggle.checked = !!lowResourceMode;
     }
+    syncHighlightColorUi();
+  }
+
+  function syncHighlightColorUi() {
+    highlightColor = normalizeHexColor(highlightColor);
+    if (highlightColorPicker) {
+      highlightColorPicker.value = highlightColor;
+    }
+    const swatches = document.querySelectorAll(".pdf-color-swatch[data-color]");
+    swatches.forEach((swatch) => {
+      const color = normalizeHexColor(swatch.getAttribute("data-color") || "");
+      swatch.style.background = color;
+      swatch.classList.toggle("is-active", color === highlightColor);
+    });
   }
 
   function enforceOcrAvailability() {
@@ -193,6 +338,48 @@
     clearStatusAfter(ms);
   }
 
+  function syncAnnotationModeUi() {
+    if (highlightToggle) {
+      highlightToggle.classList.toggle("is-active", highlightMode);
+      highlightToggle.setAttribute("aria-pressed", highlightMode ? "true" : "false");
+    }
+    if (eraseToggle) {
+      eraseToggle.classList.toggle("is-active", eraseMode);
+      eraseToggle.setAttribute("aria-pressed", eraseMode ? "true" : "false");
+    }
+
+    if (document.body) {
+      document.body.classList.toggle("pdf-highlight-mode", highlightMode);
+      document.body.classList.toggle("pdf-erase-mode", eraseMode);
+      if (highlightMode) {
+        document.body.setAttribute("data-pdf-highlight-mode", "on");
+      } else {
+        document.body.removeAttribute("data-pdf-highlight-mode");
+      }
+      if (eraseMode) {
+        document.body.setAttribute("data-pdf-erase-mode", "on");
+      } else {
+        document.body.removeAttribute("data-pdf-erase-mode");
+      }
+    }
+  }
+
+  function setHighlightMode(enabled) {
+    highlightMode = !!enabled;
+    if (highlightMode) {
+      eraseMode = false;
+    }
+    syncAnnotationModeUi();
+  }
+
+  function setEraseMode(enabled) {
+    eraseMode = !!enabled;
+    if (eraseMode) {
+      highlightMode = false;
+    }
+    syncAnnotationModeUi();
+  }
+
   function applyPerformanceProfile() {
     if (lowResourceMode) {
       selectionDebounceMs = LOW_RESOURCE_SELECTION_DEBOUNCE_MS;
@@ -223,6 +410,20 @@
     }
 
     return decoded;
+  }
+
+  function normalizeDocumentId(pdfUrl) {
+    if (!pdfUrl) {
+      return "";
+    }
+
+    try {
+      const url = new URL(pdfUrl);
+      url.hash = "";
+      return url.toString();
+    } catch (_) {
+      return String(pdfUrl).split("#")[0] || String(pdfUrl);
+    }
   }
 
   function extractPdfFileName(pdfUrl) {
@@ -666,6 +867,532 @@
     );
   }
 
+  function getPageElementFromPoint(x, y) {
+    const target = document.elementFromPoint(x, y);
+    if (!target || typeof target.closest !== "function") {
+      return null;
+    }
+    return target.closest(".page");
+  }
+
+  function collectHighlightRects(selection) {
+    const rectsByPage = new Map();
+    if (!selection || selection.rangeCount === 0) {
+      return rectsByPage;
+    }
+
+    for (let i = 0; i < selection.rangeCount; i += 1) {
+      const range = selection.getRangeAt(i);
+      const rects = Array.from(range.getClientRects() || []);
+      rects.forEach((rect) => {
+        if (rect.width < MIN_HIGHLIGHT_RECT_PX || rect.height < MIN_HIGHLIGHT_RECT_PX) {
+          return;
+        }
+        const centerX = rect.left + rect.width / 2;
+        const centerY = rect.top + rect.height / 2;
+        const pageEl = getPageElementFromPoint(centerX, centerY);
+        if (!pageEl) {
+          return;
+        }
+        const pageRect = pageEl.getBoundingClientRect();
+        if (pageRect.width <= 0 || pageRect.height <= 0) {
+          return;
+        }
+        const pageNumber = Number(pageEl.getAttribute("data-page-number") || 0);
+        if (!pageNumber) {
+          return;
+        }
+
+        const normalized = {
+          x: clamp01((rect.left - pageRect.left) / pageRect.width),
+          y: clamp01((rect.top - pageRect.top) / pageRect.height),
+          w: clamp01(rect.width / pageRect.width),
+          h: clamp01(rect.height / pageRect.height),
+        };
+
+        if (normalized.w <= 0 || normalized.h <= 0) {
+          return;
+        }
+
+        if (!rectsByPage.has(pageNumber)) {
+          rectsByPage.set(pageNumber, []);
+        }
+        rectsByPage.get(pageNumber).push(normalized);
+      });
+    }
+
+    return rectsByPage;
+  }
+
+  function renderHighlightsForPage(pageNumber) {
+    if (!pagesEl || !pageNumber) {
+      return;
+    }
+    const pageEl = pagesEl.querySelector(`.page[data-page-number="${pageNumber}"]`);
+    if (!pageEl) {
+      return;
+    }
+    let layer = pageEl.querySelector(".pdf-highlight-layer");
+    if (!layer) {
+      layer = document.createElement("div");
+      layer.className = "pdf-highlight-layer";
+      pageEl.appendChild(layer);
+    }
+    layer.innerHTML = "";
+
+    const highlights = Array.isArray(pdfAnnotations?.highlights)
+      ? pdfAnnotations.highlights.filter((item) => Number(item?.page) === Number(pageNumber))
+      : [];
+
+    highlights.forEach((highlight) => {
+      const rects = Array.isArray(highlight?.rects) ? highlight.rects : [];
+      rects.forEach((rect) => {
+        if (!rect) {
+          return;
+        }
+        const block = document.createElement("div");
+        block.className = "pdf-highlight";
+        block.setAttribute("data-highlight-id", highlight.id || "");
+        block.style.background = hexToRgba(highlight.color || highlightColor, 0.65);
+        block.style.left = `${clamp01(rect.x) * 100}%`;
+        block.style.top = `${clamp01(rect.y) * 100}%`;
+        block.style.width = `${clamp01(rect.w) * 100}%`;
+        block.style.height = `${clamp01(rect.h) * 100}%`;
+        layer.appendChild(block);
+      });
+    });
+  }
+
+  function renderAllHighlights() {
+    if (!pagesEl) {
+      return;
+    }
+    const pageEls = pagesEl.querySelectorAll(".page[data-page-number]");
+    pageEls.forEach((pageEl) => {
+      const pageNumber = Number(pageEl.getAttribute("data-page-number") || 0);
+      if (pageNumber) {
+        renderHighlightsForPage(pageNumber);
+      }
+    });
+  }
+
+  async function addHighlightsFromSelection() {
+    if (!annotationsReady || !highlightMode) {
+      return;
+    }
+
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed) {
+      return;
+    }
+
+    const rectsByPage = collectHighlightRects(selection);
+    if (rectsByPage.size === 0) {
+      return;
+    }
+
+    rectsByPage.forEach((rects, pageNumber) => {
+      pdfAnnotations.highlights.push({
+        id: createId(),
+        page: pageNumber,
+        rects,
+        color: highlightColor,
+        createdAt: Date.now(),
+      });
+      renderHighlightsForPage(pageNumber);
+    });
+
+    try {
+      selection.removeAllRanges();
+    } catch (_) {
+      // ignore selection cleanup errors
+    }
+
+    await saveAnnotationsForDoc(currentDocId);
+    setTransientStatus("Highlighted", 900);
+  }
+
+  async function removeHighlightById(id) {
+    if (!id || !Array.isArray(pdfAnnotations?.highlights)) {
+      return;
+    }
+    const target = pdfAnnotations.highlights.find((item) => item?.id === id);
+    pdfAnnotations.highlights = pdfAnnotations.highlights.filter((item) => item?.id !== id);
+    if (target) {
+      renderHighlightsForPage(target.page);
+      await saveAnnotationsForDoc(currentDocId);
+      setTransientStatus("Highlight removed", 900);
+    }
+  }
+
+  function setBookmarkPanelOpen(open) {
+    if (!bookmarkPanel || !toggleBookmarksBtn) {
+      return;
+    }
+    bookmarkPanel.hidden = !open;
+    bookmarkPanel.style.display = open ? "flex" : "none";
+    toggleBookmarksBtn.setAttribute("aria-expanded", open ? "true" : "false");
+
+    if (bookmarkAutoHideTimer) {
+      clearTimeout(bookmarkAutoHideTimer);
+      bookmarkAutoHideTimer = null;
+    }
+    if (open) {
+      bookmarkAutoHideTimer = setTimeout(() => {
+        bookmarkAutoHideTimer = null;
+        setBookmarkPanelOpen(false);
+      }, BOOKMARK_AUTOHIDE_MS);
+    }
+  }
+
+  function openBookmarkPanel() {
+    renderBookmarksPanel();
+    setBookmarkPanelOpen(true);
+  }
+
+  function renderBookmarksPanel() {
+    if (!bookmarkList || !bookmarkEmpty || !toggleBookmarksBtn) {
+      return;
+    }
+    const bookmarks = Array.isArray(pdfAnnotations?.bookmarks)
+      ? [...pdfAnnotations.bookmarks]
+      : [];
+    bookmarks.sort((a, b) => Number(a?.page || 0) - Number(b?.page || 0));
+
+    bookmarkList.innerHTML = "";
+    if (bookmarks.length === 0) {
+      bookmarkEmpty.style.display = "block";
+      toggleBookmarksBtn.textContent = "Marks";
+      return;
+    }
+
+    bookmarkEmpty.style.display = "none";
+    toggleBookmarksBtn.textContent = `Marks (${bookmarks.length})`;
+
+    bookmarks.forEach((bookmark) => {
+      const item = document.createElement("div");
+      item.className = "pdf-bookmark-item";
+
+      const link = document.createElement("button");
+      link.className = "pdf-bookmark-link";
+      link.type = "button";
+      link.textContent = `Page ${bookmark.page || 1}`;
+      link.addEventListener("click", () => {
+        goToPage(bookmark.page || 1);
+        setBookmarkPanelOpen(false);
+      });
+
+      const removeBtn = document.createElement("button");
+      removeBtn.className = "pdf-bookmark-remove";
+      removeBtn.type = "button";
+      removeBtn.textContent = "X";
+      removeBtn.setAttribute("aria-label", "Remove bookmark");
+      removeBtn.addEventListener("click", async () => {
+        pdfAnnotations.bookmarks = pdfAnnotations.bookmarks.filter(
+          (entry) => entry?.id !== bookmark.id,
+        );
+        await saveAnnotationsForDoc(currentDocId);
+        renderBookmarksPanel();
+      });
+
+      item.appendChild(link);
+      item.appendChild(removeBtn);
+      bookmarkList.appendChild(item);
+    });
+  }
+
+  async function addBookmark() {
+    if (!pdfViewer || !annotationsReady) {
+      return;
+    }
+    const page = Number(pdfViewer.currentPageNumber || 1);
+    const exists = Array.isArray(pdfAnnotations.bookmarks)
+      ? pdfAnnotations.bookmarks.some((item) => Number(item?.page) === page)
+      : false;
+    if (exists) {
+      setTransientStatus("Bookmark exists", 900);
+      return;
+    }
+    pdfAnnotations.bookmarks.push({
+      id: createId(),
+      page,
+      createdAt: Date.now(),
+    });
+    await saveAnnotationsForDoc(currentDocId);
+    renderBookmarksPanel();
+    setTransientStatus("Bookmark added", 900);
+  }
+
+  function transformInkPoints(points, rect, rotation) {
+    const output = points.slice();
+    const [left, bottom, right, top] = rect;
+    const rot = ((Number(rotation) || 0) % 360 + 360) % 360;
+    switch (rot) {
+      case 0:
+        for (let i = 0; i < output.length; i += 2) {
+          output[i] -= left;
+          output[i + 1] = top - output[i + 1];
+        }
+        break;
+      case 90:
+        for (let i = 0; i < output.length; i += 2) {
+          const x = output[i];
+          output[i] = output[i + 1] + left;
+          output[i + 1] = x + bottom;
+        }
+        break;
+      case 180:
+        for (let i = 0; i < output.length; i += 2) {
+          output[i] = right - output[i];
+          output[i + 1] += bottom;
+        }
+        break;
+      case 270:
+        for (let i = 0; i < output.length; i += 2) {
+          const x = output[i];
+          output[i] = right - output[i + 1];
+          output[i + 1] = top - x;
+        }
+        break;
+      default:
+        return output;
+    }
+    return output;
+  }
+
+  function rectToPdfCoords(pageView, rect) {
+    const viewport = pageView?.viewport;
+    if (!viewport) {
+      return null;
+    }
+    const x1 = rect.x * viewport.width;
+    const y1 = rect.y * viewport.height;
+    const x2 = (rect.x + rect.w) * viewport.width;
+    const y2 = (rect.y + rect.h) * viewport.height;
+    const [pdfX1, pdfY1] = viewport.convertToPdfPoint(x1, y1);
+    const [pdfX2, pdfY2] = viewport.convertToPdfPoint(x2, y2);
+    return {
+      left: Math.min(pdfX1, pdfX2),
+      right: Math.max(pdfX1, pdfX2),
+      bottom: Math.min(pdfY1, pdfY2),
+      top: Math.max(pdfY1, pdfY2),
+    };
+  }
+
+  function resetExportAnnotations() {
+    if (!pdfDocument?.annotationStorage) {
+      exportAnnotationIds = new Set();
+      return;
+    }
+    for (const id of exportAnnotationIds) {
+      pdfDocument.annotationStorage.remove(id);
+    }
+    exportAnnotationIds = new Set();
+  }
+
+  function buildInkAnnotationForRect(pageView, highlight, rect, index) {
+    const coords = rectToPdfCoords(pageView, rect);
+    if (!coords) {
+      return null;
+    }
+    const height = Math.max(1, coords.top - coords.bottom);
+    const y = coords.bottom + height / 2;
+    const bezier = [coords.left, y, coords.left, y, coords.right, y, coords.right, y];
+    const points = [coords.left, y, coords.right, y];
+    const rectArray = [coords.left, coords.bottom, coords.right, coords.top];
+    const rotation = Number(pageView?.rotation || pageView?.viewport?.rotation || 0);
+    const bezierLocal = transformInkPoints(bezier, rectArray, rotation);
+    const pointsLocal = transformInkPoints(points, rectArray, rotation);
+
+    return {
+      id: `${EXPORT_ANNOTATION_PREFIX}${highlight.id || "h"}_${index}`,
+      data: {
+        annotationType: window.pdfjsLib?.AnnotationEditorType?.INK || 15,
+        color: hexToRgbArray(highlight.color || highlightColor),
+        thickness: height,
+        opacity: HIGHLIGHT_EXPORT_OPACITY,
+        paths: [
+          {
+            bezier: bezierLocal,
+            points: pointsLocal,
+          },
+        ],
+        pageIndex: Number(highlight.page || 1) - 1,
+        rect: rectArray,
+        rotation,
+      },
+    };
+  }
+
+  function applyHighlightsToAnnotationStorage() {
+    if (!pdfDocument?.annotationStorage || !pdfViewer) {
+      return 0;
+    }
+    resetExportAnnotations();
+
+    const highlights = Array.isArray(pdfAnnotations?.highlights) ? pdfAnnotations.highlights : [];
+    let count = 0;
+
+    highlights.forEach((highlight) => {
+      const pageIndex = Number(highlight?.page || 0) - 1;
+      if (pageIndex < 0) {
+        return;
+      }
+      const pageView = pdfViewer.getPageView(pageIndex);
+      if (!pageView) {
+        return;
+      }
+      const rects = Array.isArray(highlight?.rects) ? highlight.rects : [];
+      rects.forEach((rect, idx) => {
+        const annotation = buildInkAnnotationForRect(pageView, highlight, rect, idx);
+        if (!annotation) {
+          return;
+        }
+        pdfDocument.annotationStorage.setValue(annotation.id, annotation.data);
+        exportAnnotationIds.add(annotation.id);
+        count += 1;
+      });
+    });
+
+    return count;
+  }
+
+  function downloadBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename || "document.pdf";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => {
+      URL.revokeObjectURL(url);
+    }, 1200);
+  }
+
+  function getDownloadFileName() {
+    const base = extractPdfFileName(currentDocId) || "document.pdf";
+    return base.toLowerCase().endsWith(".pdf") ? base : `${base}.pdf`;
+  }
+
+  async function downloadPdfWithHighlights() {
+    if (!pdfDocument) {
+      return;
+    }
+    setStatus("Preparing download...");
+    try {
+      const count = applyHighlightsToAnnotationStorage();
+      if (count === 0) {
+        const bytes = await pdfDocument.getData();
+        downloadBlob(new Blob([bytes], { type: "application/pdf" }), getDownloadFileName());
+        setTransientStatus("Downloaded", 1000);
+        return;
+      }
+
+      const bytes = await pdfDocument.saveDocument();
+      downloadBlob(new Blob([bytes], { type: "application/pdf" }), getDownloadFileName());
+      setTransientStatus("Downloaded with highlights", 1400);
+    } catch (error) {
+      try {
+        const bytes = await pdfDocument.getData();
+        downloadBlob(new Blob([bytes], { type: "application/pdf" }), getDownloadFileName());
+        setTransientStatus("Downloaded (no highlights)", 1400);
+      } catch (_) {
+        setTransientStatus("Download failed", 1600);
+      }
+    }
+  }
+
+  function installAnnotationHandlers() {
+    highlightToggle?.addEventListener("click", () => {
+      setHighlightMode(!highlightMode);
+    });
+
+    eraseToggle?.addEventListener("click", () => {
+      setEraseMode(!eraseMode);
+    });
+
+    addBookmarkBtn?.addEventListener("click", () => {
+      void addBookmark();
+    });
+
+    document.querySelectorAll(".pdf-color-swatch[data-color]").forEach((swatch) => {
+      swatch.addEventListener("click", () => {
+        const color = swatch.getAttribute("data-color") || "";
+        if (!color) {
+          return;
+        }
+        highlightColor = normalizeHexColor(color);
+        void saveViewerSetting(HIGHLIGHT_COLOR_KEY, highlightColor);
+        syncHighlightColorUi();
+      });
+    });
+
+    highlightColorPicker?.addEventListener("change", () => {
+      highlightColor = normalizeHexColor(highlightColorPicker.value);
+      void saveViewerSetting(HIGHLIGHT_COLOR_KEY, highlightColor);
+      syncHighlightColorUi();
+    });
+
+    toggleBookmarksBtn?.addEventListener("click", () => {
+      openBookmarkPanel();
+    });
+
+    closeBookmarkPanel?.addEventListener("click", () => {
+      setBookmarkPanelOpen(false);
+    });
+
+    downloadPdfBtn?.addEventListener("click", () => {
+      void downloadPdfWithHighlights();
+    });
+
+    document.addEventListener(
+      "mouseup",
+      (event) => {
+        if (!highlightMode) {
+          return;
+        }
+        if (event && event.button !== 0) {
+          return;
+        }
+        setTimeout(() => {
+          void addHighlightsFromSelection();
+        }, 0);
+      },
+      true,
+    );
+
+    pagesEl?.addEventListener("click", (event) => {
+      if (!eraseMode) {
+        return;
+      }
+      const target = event.target;
+      if (!target || typeof target.closest !== "function") {
+        return;
+      }
+      const highlightEl = target.closest(".pdf-highlight");
+      const highlightId = highlightEl?.getAttribute("data-highlight-id") || "";
+      if (!highlightId) {
+        return;
+      }
+      void removeHighlightById(highlightId);
+    });
+
+    document.addEventListener("mousedown", (event) => {
+      if (!bookmarkPanel || bookmarkPanel.hidden) {
+        return;
+      }
+      const target = event.target;
+      if (
+        (bookmarkPanel && bookmarkPanel.contains(target)) ||
+        (toggleBookmarksBtn && toggleBookmarksBtn.contains(target))
+      ) {
+        return;
+      }
+      setBookmarkPanelOpen(false);
+    });
+  }
+
   function applyZoom(value) {
     if (!pdfViewer || !value) {
       return;
@@ -825,6 +1552,20 @@
       syncZoomSelect(evt?.scale || getCurrentScale(), evt?.presetValue || "");
       scheduleViewerCleanup();
     });
+
+    eventBus.on("pagerendered", (evt) => {
+      const pageNumber = Number(evt?.pageNumber || 0);
+      if (pageNumber) {
+        renderHighlightsForPage(pageNumber);
+      }
+    });
+
+    eventBus.on("textlayerrendered", (evt) => {
+      const pageNumber = Number(evt?.pageNumber || 0);
+      if (pageNumber) {
+        renderHighlightsForPage(pageNumber);
+      }
+    });
   }
 
   function createViewer() {
@@ -913,6 +1654,8 @@
     installSelectionObservers();
     installToolbarHandlers();
     installCleanupHooks();
+    installAnnotationHandlers();
+    syncAnnotationModeUi();
 
     const params = new URLSearchParams(window.location.search);
     const fileParam = params.get("file");
@@ -923,12 +1666,16 @@
     }
 
     const sourceUrl = decodeFileParam(fileParam);
+    currentDocId = normalizeDocumentId(sourceUrl);
     setViewerTitle(sourceUrl);
     showSourceHints(sourceUrl);
 
     try {
       createViewer();
       await openPdf(sourceUrl);
+      await loadAnnotationsForDoc(currentDocId);
+      renderBookmarksPanel();
+      renderAllHighlights();
       hideNote();
     } catch (error) {
       setStatus("Failed");

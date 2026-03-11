@@ -275,6 +275,46 @@ body.lex-pdf-viewer .pdf-toolbar-toggles {
   gap: 10px;
 }
 
+body.lex-pdf-viewer .pdf-toolbar-actions {
+  gap: 6px;
+}
+
+body.lex-pdf-viewer .pdf-highlight-colors {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 2px;
+}
+
+body.lex-pdf-viewer .pdf-color-swatch {
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  border: 1px solid #5f6368;
+  background: #fff;
+  cursor: pointer;
+  padding: 0;
+}
+
+body.lex-pdf-viewer .pdf-color-swatch.is-active {
+  outline: 2px solid #8ab4f8;
+  outline-offset: 1px;
+}
+
+body.lex-pdf-viewer .pdf-color-custom {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+body.lex-pdf-viewer .pdf-color-custom input {
+  width: 18px;
+  height: 18px;
+  border: none;
+  padding: 0;
+  background: transparent;
+}
+
 body.lex-pdf-viewer .pdf-toggle {
   display: inline-flex;
   align-items: center;
@@ -320,6 +360,19 @@ body.lex-pdf-viewer .pdf-btn {
 
 body.lex-pdf-viewer .pdf-btn:hover {
   background: #4a4f53;
+}
+
+body.lex-pdf-viewer .pdf-action-btn {
+  width: auto;
+  padding: 0 8px;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+}
+
+body.lex-pdf-viewer .pdf-btn.is-active {
+  border-color: #8ab4f8;
+  background: #5f6368;
+  color: #ffffff;
 }
 
 body.lex-pdf-viewer #zoomSelect {
@@ -394,6 +447,117 @@ body.lex-pdf-viewer #pdfPages .page .textLayer {
   transform-origin: 0 0;
 }
 
+body.lex-pdf-viewer .pdf-highlight-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+}
+
+body.lex-pdf-viewer .pdf-highlight {
+  position: absolute;
+  background: rgba(255, 235, 130, 0.7);
+  border-radius: 2px;
+}
+
+body.lex-pdf-viewer.pdf-erase-mode .pdf-highlight {
+  pointer-events: auto;
+  cursor: pointer;
+  box-shadow: 0 0 0 1px rgba(60, 64, 67, 0.35);
+}
+
+body.lex-pdf-viewer .pdf-bookmark-panel {
+  position: absolute;
+  top: 48px;
+  right: 12px;
+  width: 220px;
+  max-height: calc(100vh - 64px);
+  background: #ffffff;
+  color: #202124;
+  border: 1px solid #dadce0;
+  border-radius: 10px;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.2);
+  display: flex;
+  flex-direction: column;
+  z-index: 2147482998;
+}
+
+body.lex-pdf-viewer .pdf-bookmark-panel[hidden] {
+  display: none !important;
+}
+
+body.lex-pdf-viewer .pdf-bookmark-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  background: #f1f3f4;
+  border-bottom: 1px solid #e0e0e0;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+body.lex-pdf-viewer .pdf-bookmark-close {
+  width: 22px;
+  height: 22px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: #5f6368;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+body.lex-pdf-viewer .pdf-bookmark-close:hover {
+  background: #e8eaed;
+  border-radius: 50%;
+}
+
+body.lex-pdf-viewer .pdf-bookmark-list {
+  overflow-y: auto;
+  max-height: 320px;
+}
+
+body.lex-pdf-viewer .pdf-bookmark-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid #eceff1;
+}
+
+body.lex-pdf-viewer .pdf-bookmark-item:last-child {
+  border-bottom: none;
+}
+
+body.lex-pdf-viewer .pdf-bookmark-link {
+  border: none;
+  background: transparent;
+  color: #1a73e8;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 2px 0;
+  text-align: left;
+}
+
+body.lex-pdf-viewer .pdf-bookmark-remove {
+  border: none;
+  background: transparent;
+  color: #b0212a;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+body.lex-pdf-viewer .pdf-bookmark-empty {
+  padding: 10px;
+  color: #5f6368;
+  font-size: 12px;
+  text-align: center;
+}
+
 body.lex-pdf-viewer #pdfPages .page .textLayer span,
 body.lex-pdf-viewer #pdfPages .page .textLayer br {
   white-space: pre;
@@ -441,5 +605,10 @@ body.lex-pdf-viewer #pdfPages .page .textLayer br {
 
   body.lex-pdf-viewer .pdf-toolbar-toggles {
     gap: 8px;
+  }
+
+  body.lex-pdf-viewer .pdf-bookmark-panel {
+    right: 8px;
+    width: 200px;
   }
 }

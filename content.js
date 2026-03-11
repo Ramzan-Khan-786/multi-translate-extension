@@ -15,9 +15,12 @@ const PDF_POLL_MS = 300;
 const POPUP_IDLE_CLOSE_MS = 5000;
 const IS_PDF_MODE = window.location.protocol === "chrome-extension:";
 const HAS_PDFJS_SELECTION_BRIDGE = IS_PDF_MODE && !!document.getElementById("pdfPages");
+const PDF_HIGHLIGHT_MODE_ATTR = "data-pdf-highlight-mode";
+const PDF_ERASE_MODE_ATTR = "data-pdf-erase-mode";
 const SUPPORTED_LANG_CODES = new Set(LANGUAGE_OPTIONS.map((item) => item.code));
 const URDU_FONT_ASSET_PATH = "assets/fonts/NotoNastaliqUrdu-Arabic.woff2";
 const URDU_FONT_RUNTIME_FAMILY = "TextBridge Noto Nastaliq Runtime";
+const EXTENSION_ENABLED_KEY = "textbridge_enabled";
 
 let lastDispatchedSelection = "";
 let selectionDebounceId = null;
@@ -35,6 +38,12 @@ let pendingPointer = null;
 let queuedSelectionText = "";
 let urduFontReady = false;
 let urduFontLoadPromise = null;
+let extensionEnabled = false;
+let extensionEnabledLoaded = false;
+
+function resolveEnabledValue(value) {
+  return value !== false;
+}
 
 function getRuntime() {
   const c = globalThis.chrome;
@@ -44,6 +53,38 @@ function getRuntime() {
 function getStorageArea() {
   const c = globalThis.chrome;
   return c && c.storage && c.storage.local ? c.storage.local : null;
+}
+
+async function loadExtensionEnabled() {
+  if (extensionEnabledLoaded) {
+    return extensionEnabled;
+  }
+
+  const storage = getStorageArea();
+  if (!storage || typeof storage.get !== "function") {
+    extensionEnabled = true;
+    extensionEnabledLoaded = true;
+    return extensionEnabled;
+  }
+
+  try {
+    const settings = await storage.get([EXTENSION_ENABLED_KEY]);
+    extensionEnabled = resolveEnabledValue(settings[EXTENSION_ENABLED_KEY]);
+  } catch (_) {
+    extensionEnabled = true;
+  }
+  extensionEnabledLoaded = true;
+  return extensionEnabled;
+}
+
+function applyExtensionEnabledState(nextValue) {
+  extensionEnabled = resolveEnabledValue(nextValue);
+  extensionEnabledLoaded = true;
+  if (!extensionEnabled) {
+    removePopup();
+    clearSelectionDebounce();
+    lastDispatchedSelection = "";
+  }
 }
 
 function applyUrduTypography(el) {
@@ -295,6 +336,20 @@ function normalizeSelection(raw) {
   return (raw || "").replace(/\s+/g, " ").trim();
 }
 
+function isPdfAnnotationModeActive() {
+  if (!IS_PDF_MODE) {
+    return false;
+  }
+  const body = document.body;
+  if (!body) {
+    return false;
+  }
+  return (
+    body.getAttribute(PDF_HIGHLIGHT_MODE_ATTR) === "on" ||
+    body.getAttribute(PDF_ERASE_MODE_ATTR) === "on"
+  );
+}
+
 function getSelectionFromFormControl() {
   const active = document.activeElement;
   if (!active) {
@@ -429,6 +484,9 @@ async function setLangPref(key, value) {
 }
 
 async function fetchAndRender(text, pointer, handlers = {}) {
+  if (!extensionEnabled) {
+    return;
+  }
   const onError = typeof handlers.onError === "function" ? handlers.onError : null;
   const onSuccess = typeof handlers.onSuccess === "function" ? handlers.onSuccess : null;
 
@@ -451,6 +509,9 @@ async function fetchAndRender(text, pointer, handlers = {}) {
       url: window.location.href,
     },
     (data) => {
+      if (!extensionEnabled) {
+        return;
+      }
       if (!data) {
         onError?.("Translation unavailable");
         return;
@@ -708,6 +769,9 @@ function clearPdfPollTimer() {
 }
 
 function queueSelectionTranslation(selection, pointer) {
+  if (!extensionEnabled) {
+    return;
+  }
   if (selection === queuedSelectionText) {
     return;
   }
@@ -735,6 +799,12 @@ function queueSelectionTranslation(selection, pointer) {
 }
 
 function handleSelectionSource(pointer) {
+  if (!extensionEnabled) {
+    return;
+  }
+  if (isPdfAnnotationModeActive()) {
+    return;
+  }
   const selection = getCurrentSelectionText();
   queueSelectionTranslation(selection, pointer || (IS_PDF_MODE ? getSelectionAnchorPoint() : lastPointer));
 }
@@ -774,6 +844,9 @@ function installSharedListeners() {
 
 function installPdfMode() {
   document.addEventListener("lexicon-pro-selection", (event) => {
+    if (isPdfAnnotationModeActive()) {
+      return;
+    }
     const detail = event.detail || {};
     const text = normalizeSelection(detail.text || "");
     const pointer = {
@@ -838,6 +911,9 @@ if (
   );
 }
 
+void loadExtensionEnabled().then((enabled) => {
+  applyExtensionEnabledState(enabled);
+});
 void ensureUrduFontLoaded();
 installSharedListeners();
 if (IS_PDF_MODE) {
@@ -851,6 +927,10 @@ if (storageForLangSync && globalThis.chrome?.storage?.onChanged) {
   globalThis.chrome.storage.onChanged.addListener((changes, areaName) => {
     if (areaName !== "local") {
       return;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(changes, EXTENSION_ENABLED_KEY)) {
+      applyExtensionEnabledState(changes[EXTENSION_ENABLED_KEY]?.newValue);
     }
 
     const nextLang1 = changes.lang1?.newValue;
