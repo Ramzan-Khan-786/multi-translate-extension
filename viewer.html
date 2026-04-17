@@ -40,6 +40,16 @@
         </label>
       </div>
       <div class="pdf-toolbar-group pdf-toolbar-actions">
+        <button
+          id="openSearchBtn"
+          class="pdf-btn pdf-action-btn"
+          type="button"
+          aria-expanded="false"
+          aria-controls="searchPanel"
+          title="Search in PDF (Ctrl+F)"
+        >
+          Find
+        </button>
         <button id="highlightToggle" class="pdf-btn pdf-action-btn" type="button" aria-pressed="false" title="Highlight mode">Marker</button>
         <div id="highlightColors" class="pdf-highlight-colors" role="group" aria-label="Highlight colors">
           <button class="pdf-color-swatch" data-color="#ffe082" type="button" aria-label="Yellow highlight"></button>
@@ -58,6 +68,29 @@
       <div id="viewerStatus" class="pdf-toolbar-status" aria-live="polite"></div>
     </div>
     <div id="viewerNote"></div>
+    <div id="searchPanel" class="pdf-search-panel" hidden>
+      <div class="pdf-search-header">
+        <span class="pdf-search-title">Search PDF</span>
+        <div class="pdf-search-header-actions">
+          <span id="searchCount" class="pdf-search-count">0 / 0</span>
+          <button id="closeSearchPanel" class="pdf-search-close" type="button" aria-label="Close search">X</button>
+        </div>
+      </div>
+      <div class="pdf-search-controls">
+        <input
+          id="searchInput"
+          type="search"
+          placeholder="Search full PDF"
+          autocomplete="off"
+          spellcheck="false"
+          aria-label="Search full PDF"
+        />
+        <button id="searchPrevBtn" class="pdf-search-nav" type="button" aria-label="Previous match">Prev</button>
+        <button id="searchNextBtn" class="pdf-search-nav" type="button" aria-label="Next match">Next</button>
+      </div>
+      <div id="searchResults" class="pdf-search-results"></div>
+      <div id="searchEmpty" class="pdf-search-empty">Type a word to search the full PDF.</div>
+    </div>
     <div id="bookmarkPanel" class="pdf-bookmark-panel" hidden>
       <div class="pdf-bookmark-header">
         <span>Bookmarks</span>

@@ -8,6 +8,15 @@
   const zoomOutBtn = document.getElementById("zoomOutBtn");
   const pageNumberInput = document.getElementById("pageNumberInput");
   const pageCountLabel = document.getElementById("pageCountLabel");
+  const openSearchBtn = document.getElementById("openSearchBtn");
+  const searchPanel = document.getElementById("searchPanel");
+  const searchInput = document.getElementById("searchInput");
+  const searchCount = document.getElementById("searchCount");
+  const searchPrevBtn = document.getElementById("searchPrevBtn");
+  const searchNextBtn = document.getElementById("searchNextBtn");
+  const searchResults = document.getElementById("searchResults");
+  const searchEmpty = document.getElementById("searchEmpty");
+  const closeSearchPanel = document.getElementById("closeSearchPanel");
   const ocrToggle = document.getElementById("ocrToggle");
   const lowResourceToggle = document.getElementById("lowResourceToggle");
   const highlightToggle = document.getElementById("highlightToggle");
@@ -37,6 +46,8 @@
   const LOW_RESOURCE_OCR_THROTTLE_MS = 1600;
   const OCR_CROP_SIZE_CSS = 260;
   const OCR_MAX_RESULT_CHARS = 140;
+  const SEARCH_INPUT_DEBOUNCE_MS = 180;
+  const SEARCH_SNIPPET_CONTEXT_CHARS = 48;
   const STATUS_CLEAR_DEFAULT_MS = 1100;
   const OCR_ENABLED_KEY = "pdf_ocr_enabled";
   const LOW_RESOURCE_KEY = "pdf_low_resource_mode";
@@ -64,6 +75,7 @@
   let pdfDocument = null;
   let eventBus = null;
   let linkService = null;
+  let findController = null;
   let textDetector = null;
   let ocrInFlight = false;
   let lastOcrTs = 0;
@@ -81,6 +93,14 @@
   let highlightColor = DEFAULT_HIGHLIGHT_COLOR;
   let exportAnnotationIds = new Set();
   let bookmarkAutoHideTimer = null;
+  let searchInputDebounce = null;
+  let searchPanelOpen = false;
+  let currentSearchQuery = "";
+  let renderedSearchQuery = "";
+  let searchMatchesCount = { current: 0, total: 0 };
+  let searchPageTextCache = [];
+  let searchPageTextPromise = null;
+  let searchResultsBuildToken = 0;
 
   function raf(fn) {
     requestAnimationFrame(fn);
@@ -336,6 +356,387 @@
   function setTransientStatus(text, ms = STATUS_CLEAR_DEFAULT_MS) {
     setStatus(text);
     clearStatusAfter(ms);
+  }
+
+  function normalizeSearchQuery(value) {
+    return String(value || "").replace(/\s+/g, " ").trim();
+  }
+
+  function updateSearchCountUi(matchesCount = searchMatchesCount) {
+    searchMatchesCount = {
+      current: Math.max(0, Number(matchesCount?.current) || 0),
+      total: Math.max(0, Number(matchesCount?.total) || 0),
+    };
+
+    if (searchCount) {
+      searchCount.textContent = searchMatchesCount.total
+        ? `${searchMatchesCount.current} / ${searchMatchesCount.total}`
+        : "0 / 0";
+    }
+    if (searchPrevBtn) {
+      searchPrevBtn.disabled = searchMatchesCount.total === 0;
+    }
+    if (searchNextBtn) {
+      searchNextBtn.disabled = searchMatchesCount.total === 0;
+    }
+  }
+
+  function setSearchEmptyMessage(message) {
+    if (!searchEmpty) {
+      return;
+    }
+    searchEmpty.textContent = message || "";
+    searchEmpty.style.display = message ? "block" : "none";
+  }
+
+  function syncSearchResultSelection(resultNumber = searchMatchesCount.current, scrollIntoView = false) {
+    if (!searchResults) {
+      return;
+    }
+
+    const selectedNumber = Math.max(0, Number(resultNumber) || 0);
+    searchResults.querySelectorAll(".pdf-search-result.is-active").forEach((item) => {
+      item.classList.remove("is-active");
+    });
+
+    if (!selectedNumber) {
+      return;
+    }
+
+    const activeItem = searchResults.querySelector(
+      `.pdf-search-result[data-result-number="${selectedNumber}"]`,
+    );
+    if (!activeItem) {
+      return;
+    }
+
+    activeItem.classList.add("is-active");
+    if (scrollIntoView) {
+      activeItem.scrollIntoView({ block: "nearest" });
+    }
+  }
+
+  function syncSearchPanelToggleUi() {
+    if (!openSearchBtn) {
+      return;
+    }
+    openSearchBtn.classList.toggle("is-active", searchPanelOpen);
+    openSearchBtn.setAttribute("aria-expanded", searchPanelOpen ? "true" : "false");
+  }
+
+  function setSearchPanelOpen(open, options = {}) {
+    searchPanelOpen = !!open;
+    if (searchPanel) {
+      searchPanel.hidden = !searchPanelOpen;
+      searchPanel.style.display = searchPanelOpen ? "flex" : "none";
+    }
+    syncSearchPanelToggleUi();
+
+    if (searchPanelOpen && options.focusInput) {
+      raf(() => {
+        searchInput?.focus();
+        if (options.selectQuery && searchInput?.value) {
+          searchInput.select();
+        }
+      });
+    }
+  }
+
+  function invalidateSearchResults() {
+    searchResultsBuildToken += 1;
+    renderedSearchQuery = "";
+    if (searchResults) {
+      searchResults.innerHTML = "";
+    }
+    syncSearchResultSelection(0);
+  }
+
+  function resetSearchCache() {
+    searchPageTextCache = [];
+    searchPageTextPromise = null;
+  }
+
+  function clearSearchResultsUi(message = "Type a word to search the full PDF.") {
+    invalidateSearchResults();
+    updateSearchCountUi({ current: 0, total: 0 });
+    setSearchEmptyMessage(message);
+  }
+
+  function clearPdfSearch(options = {}) {
+    if (searchInputDebounce) {
+      clearTimeout(searchInputDebounce);
+      searchInputDebounce = null;
+    }
+    currentSearchQuery = "";
+    clearSearchResultsUi(options.message || "Type a word to search the full PDF.");
+    if (!options.keepInput && searchInput) {
+      searchInput.value = "";
+    }
+    setStatus("");
+
+    if (eventBus) {
+      eventBus.dispatch("findbarclose", {
+        source: findController || window,
+      });
+    }
+  }
+
+  function extractTextContentString(textContent) {
+    const parts = [];
+    const items = Array.isArray(textContent?.items) ? textContent.items : [];
+    items.forEach((item) => {
+      if (item?.str) {
+        parts.push(item.str);
+      }
+      if (item?.hasEOL) {
+        parts.push("\n");
+      }
+    });
+    return parts.join("");
+  }
+
+  async function getSearchPageTexts() {
+    if (!pdfDocument) {
+      return [];
+    }
+    if (searchPageTextCache.length === pdfDocument.numPages) {
+      return searchPageTextCache;
+    }
+    if (searchPageTextPromise) {
+      return searchPageTextPromise;
+    }
+
+    const docRef = pdfDocument;
+    searchPageTextPromise = (async () => {
+      const texts = [];
+      for (let pageNumber = 1; pageNumber <= docRef.numPages; pageNumber += 1) {
+        const page = await docRef.getPage(pageNumber);
+        const textContent = await page.getTextContent({ disableNormalization: true });
+        texts.push(extractTextContentString(textContent));
+      }
+      if (pdfDocument === docRef) {
+        searchPageTextCache = texts;
+      }
+      return texts;
+    })().catch((error) => {
+      searchPageTextPromise = null;
+      throw error;
+    });
+
+    return searchPageTextPromise;
+  }
+
+  function compactSearchSnippetText(value) {
+    return String(value || "").replace(/\s+/g, " ").trim();
+  }
+
+  function appendSearchSnippet(container, pageText, matchStart, matchLength) {
+    const safeStart = clamp(Number(matchStart) || 0, 0, pageText.length);
+    const safeEnd = clamp(safeStart + Math.max(1, Number(matchLength) || 1), safeStart, pageText.length);
+    const snippetStart = Math.max(0, safeStart - SEARCH_SNIPPET_CONTEXT_CHARS);
+    const snippetEnd = Math.min(pageText.length, safeEnd + SEARCH_SNIPPET_CONTEXT_CHARS);
+    const before = compactSearchSnippetText(pageText.slice(snippetStart, safeStart));
+    const matchText =
+      compactSearchSnippetText(pageText.slice(safeStart, safeEnd)) || currentSearchQuery;
+    const after = compactSearchSnippetText(pageText.slice(safeEnd, snippetEnd));
+    const beforeText = `${snippetStart > 0 ? "… " : ""}${before}`;
+    const afterText = `${after ? ` ${after}` : ""}${snippetEnd < pageText.length ? " …" : ""}`;
+
+    if (beforeText) {
+      container.append(beforeText);
+      if (!beforeText.endsWith(" ")) {
+        container.append(" ");
+      }
+    }
+
+    const mark = document.createElement("mark");
+    mark.textContent = matchText;
+    container.append(mark);
+
+    if (afterText) {
+      container.append(afterText);
+    }
+  }
+
+  function createSearchResultButton(resultNumber, pageIndex, matchIndex, pageText, matchStart, matchLength) {
+    const item = document.createElement("button");
+    item.className = "pdf-search-result";
+    item.type = "button";
+    item.setAttribute("data-result-number", String(resultNumber));
+
+    const label = document.createElement("div");
+    label.className = "pdf-search-result-label";
+    label.textContent = `${resultNumber}. Page ${pageIndex + 1}`;
+
+    const snippet = document.createElement("div");
+    snippet.className = "pdf-search-result-snippet";
+    appendSearchSnippet(snippet, pageText, matchStart, matchLength);
+
+    item.appendChild(label);
+    item.appendChild(snippet);
+    item.addEventListener("click", () => {
+      jumpToSearchResult(pageIndex, matchIndex, resultNumber);
+    });
+
+    return item;
+  }
+
+  async function renderSearchResultsList(query) {
+    const targetQuery = normalizeSearchQuery(query);
+    if (!searchResults || !targetQuery || !findController) {
+      return;
+    }
+
+    const totalMatches = Math.max(0, Number(searchMatchesCount.total) || 0);
+    const buildToken = ++searchResultsBuildToken;
+    renderedSearchQuery = "";
+    searchResults.innerHTML = "";
+
+    if (!totalMatches) {
+      setSearchEmptyMessage(`No matches found for "${targetQuery}".`);
+      syncSearchResultSelection(0);
+      return;
+    }
+
+    setSearchEmptyMessage("Building numbered results...");
+
+    let pageTexts = [];
+    try {
+      pageTexts = await getSearchPageTexts();
+    } catch (_) {
+      if (buildToken !== searchResultsBuildToken || targetQuery !== currentSearchQuery) {
+        return;
+      }
+      setSearchEmptyMessage("Matches were found, but snippets could not be loaded.");
+      return;
+    }
+
+    if (buildToken !== searchResultsBuildToken || targetQuery !== currentSearchQuery || !findController) {
+      return;
+    }
+
+    const fragment = document.createDocumentFragment();
+    const pageMatches = Array.isArray(findController.pageMatches) ? findController.pageMatches : [];
+    const pageMatchesLength = Array.isArray(findController.pageMatchesLength)
+      ? findController.pageMatchesLength
+      : [];
+    let resultNumber = 0;
+
+    pageMatches.forEach((matches, pageIndex) => {
+      const safeMatches = Array.isArray(matches) ? matches : [];
+      const safeLengths = Array.isArray(pageMatchesLength[pageIndex]) ? pageMatchesLength[pageIndex] : [];
+      const pageText = String(pageTexts[pageIndex] || "");
+
+      safeMatches.forEach((matchStart, matchIndex) => {
+        resultNumber += 1;
+        const matchLength = Math.max(1, Number(safeLengths[matchIndex]) || targetQuery.length || 1);
+        fragment.appendChild(
+          createSearchResultButton(
+            resultNumber,
+            pageIndex,
+            matchIndex,
+            pageText,
+            matchStart,
+            matchLength,
+          ),
+        );
+      });
+    });
+
+    if (buildToken !== searchResultsBuildToken || targetQuery !== currentSearchQuery) {
+      return;
+    }
+
+    searchResults.innerHTML = "";
+    searchResults.appendChild(fragment);
+    renderedSearchQuery = targetQuery;
+    setSearchEmptyMessage(resultNumber ? "" : `No matches found for "${targetQuery}".`);
+    syncSearchResultSelection(searchMatchesCount.current, searchPanelOpen);
+  }
+
+  function jumpToSearchResult(pageIndex, matchIndex, resultNumber) {
+    if (!findController || !eventBus || !pdfDocument) {
+      return;
+    }
+
+    const safePageIndex = clamp(Number(pageIndex) || 0, 0, Math.max(pdfDocument.numPages - 1, 0));
+    const pageMatches = Array.isArray(findController.pageMatches?.[safePageIndex])
+      ? findController.pageMatches[safePageIndex]
+      : [];
+    const safeMatchIndex = clamp(Number(matchIndex) || 0, 0, Math.max(pageMatches.length - 1, 0));
+    if (!pageMatches.length) {
+      return;
+    }
+
+    findController._selected.pageIdx = safePageIndex;
+    findController._selected.matchIdx = safeMatchIndex;
+    findController._offset.pageIdx = safePageIndex;
+    findController._offset.matchIdx = safeMatchIndex;
+    findController._offset.wrapped = false;
+    findController._scrollMatches = true;
+
+    const globalResultNumber = Math.max(1, Number(resultNumber) || safeMatchIndex + 1);
+    goToPage(safePageIndex + 1);
+    updateSearchCountUi({
+      current: globalResultNumber,
+      total: searchMatchesCount.total,
+    });
+    syncSearchResultSelection(globalResultNumber, true);
+
+    raf(() => {
+      eventBus.dispatch("updatetextlayermatches", {
+        source: findController,
+        pageIndex: -1,
+      });
+    });
+  }
+
+  function runPdfSearch(rawQuery, options = {}) {
+    if (searchInputDebounce) {
+      clearTimeout(searchInputDebounce);
+      searchInputDebounce = null;
+    }
+
+    const query = normalizeSearchQuery(rawQuery);
+    if (!query) {
+      clearPdfSearch();
+      return;
+    }
+    if (!eventBus || !findController) {
+      return;
+    }
+
+    const isNewQuery = query !== currentSearchQuery;
+    currentSearchQuery = query;
+    setSearchPanelOpen(true);
+
+    if (isNewQuery) {
+      clearSearchResultsUi("Searching full PDF...");
+      setStatus("Searching...");
+    }
+
+    eventBus.dispatch("find", {
+      source: findController,
+      type: "again",
+      query,
+      caseSensitive: false,
+      entireWord: false,
+      highlightAll: true,
+      findPrevious: !!options.findPrevious,
+      matchDiacritics: false,
+    });
+  }
+
+  function schedulePdfSearchFromInput() {
+    if (searchInputDebounce) {
+      clearTimeout(searchInputDebounce);
+      searchInputDebounce = null;
+    }
+
+    searchInputDebounce = setTimeout(() => {
+      searchInputDebounce = null;
+      runPdfSearch(searchInput?.value || "");
+    }, SEARCH_INPUT_DEBOUNCE_MS);
   }
 
   function syncAnnotationModeUi() {
@@ -1123,6 +1524,78 @@
     setTransientStatus("Bookmark added", 900);
   }
 
+  function installSearchHandlers() {
+    openSearchBtn?.addEventListener("click", () => {
+      const nextOpen = !searchPanelOpen;
+      setSearchPanelOpen(nextOpen, {
+        focusInput: nextOpen,
+        selectQuery: nextOpen,
+      });
+    });
+
+    closeSearchPanel?.addEventListener("click", () => {
+      setSearchPanelOpen(false);
+    });
+
+    searchInput?.addEventListener("input", () => {
+      setSearchPanelOpen(true);
+      schedulePdfSearchFromInput();
+    });
+
+    searchInput?.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        if (searchInputDebounce) {
+          clearTimeout(searchInputDebounce);
+          searchInputDebounce = null;
+        }
+        runPdfSearch(searchInput.value, { findPrevious: !!event.shiftKey });
+        return;
+      }
+
+      if (event.key === "Escape") {
+        event.preventDefault();
+        if (normalizeSearchQuery(searchInput.value)) {
+          clearPdfSearch();
+        } else {
+          setSearchPanelOpen(false);
+        }
+      }
+    });
+
+    searchPrevBtn?.addEventListener("click", () => {
+      runPdfSearch(searchInput?.value || currentSearchQuery, { findPrevious: true });
+    });
+
+    searchNextBtn?.addEventListener("click", () => {
+      runPdfSearch(searchInput?.value || currentSearchQuery);
+    });
+
+    document.addEventListener(
+      "keydown",
+      (event) => {
+        if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "f") {
+          event.preventDefault();
+          setSearchPanelOpen(true, {
+            focusInput: true,
+            selectQuery: true,
+          });
+          return;
+        }
+
+        if (event.key === "F3") {
+          const query = normalizeSearchQuery(searchInput?.value || currentSearchQuery);
+          if (!query) {
+            return;
+          }
+          event.preventDefault();
+          runPdfSearch(query, { findPrevious: !!event.shiftKey });
+        }
+      },
+      true,
+    );
+  }
+
   function transformInkPoints(points, rect, rotation) {
     const output = points.slice();
     const [left, bottom, right, top] = rect;
@@ -1566,6 +2039,45 @@
         renderHighlightsForPage(pageNumber);
       }
     });
+
+    eventBus.on("updatefindcontrolstate", (evt) => {
+      if (evt?.source && evt.source !== findController) {
+        return;
+      }
+
+      const inputQuery = normalizeSearchQuery(searchInput?.value || "");
+      if (!inputQuery && !currentSearchQuery) {
+        updateSearchCountUi({ current: 0, total: 0 });
+        syncSearchResultSelection(0);
+        return;
+      }
+
+      const rawQuery =
+        typeof evt?.rawQuery === "string" ? normalizeSearchQuery(evt.rawQuery) : currentSearchQuery;
+      if (!rawQuery) {
+        return;
+      }
+
+      currentSearchQuery = rawQuery;
+      updateSearchCountUi(evt?.matchesCount);
+
+      if (!searchMatchesCount.total) {
+        invalidateSearchResults();
+        setSearchEmptyMessage(`No matches found for "${rawQuery}".`);
+        setTransientStatus("No matches", 900);
+        return;
+      }
+
+      setStatus("");
+      syncSearchResultSelection(searchMatchesCount.current, searchPanelOpen);
+
+      if (
+        renderedSearchQuery !== rawQuery ||
+        searchResults?.childElementCount !== searchMatchesCount.total
+      ) {
+        void renderSearchResultsList(rawQuery);
+      }
+    });
   }
 
   function createViewer() {
@@ -1579,12 +2091,18 @@
 
     eventBus = new pdfjsViewer.EventBus();
     linkService = new pdfjsViewer.PDFLinkService({ eventBus });
+    findController = new pdfjsViewer.PDFFindController({
+      linkService,
+      eventBus,
+      updateMatchesCountOnProgress: false,
+    });
 
     pdfViewer = new pdfjsViewer.PDFViewer({
       container: viewerContainer,
       viewer: pagesEl,
       eventBus,
       linkService,
+      findController,
       textLayerMode: 2,
       removePageBorders: false,
       enhanceTextSelection: true,
@@ -1612,6 +2130,7 @@
   }
 
   async function openPdf(url) {
+    resetSearchCache();
     setStatus("Loading...");
     const loadingTask = pdfjsLib.getDocument(createDocumentParams(url));
     const documentRef = await loadingTask.promise;
@@ -1652,10 +2171,13 @@
     }
 
     installSelectionObservers();
+    installSearchHandlers();
     installToolbarHandlers();
     installCleanupHooks();
     installAnnotationHandlers();
     syncAnnotationModeUi();
+    syncSearchPanelToggleUi();
+    clearSearchResultsUi();
 
     const params = new URLSearchParams(window.location.search);
     const fileParam = params.get("file");
@@ -1706,12 +2228,17 @@
       clearTimeout(statusClearTimer);
       statusClearTimer = null;
     }
+    if (searchInputDebounce) {
+      clearTimeout(searchInputDebounce);
+      searchInputDebounce = null;
+    }
     if (pdfViewer && typeof pdfViewer.cleanup === "function") {
       pdfViewer.cleanup();
     }
     if (pdfDocument && typeof pdfDocument.cleanup === "function") {
       pdfDocument.cleanup();
     }
+    findController = null;
     pdfViewer = null;
     pdfDocument = null;
   });
